@@ -1,0 +1,19 @@
+> backend çalıştırma
+
+C:\Users\musak\Documents\GitHub\Animated-Sign-Language\backend> 
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+
+> backend durdurma
+
+taskkill /F /IM python.exe /T
+
+
+
+> mobile çalıştırma
+
+C:\Users\musak\Documents\GitHub\Animated-Sign-Language\mobile> 
+npx expo start
+
+
+

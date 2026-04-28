@@ -27,7 +27,9 @@ export async function transcribeAudio(
   });
 
   if (!response.ok) {
-    throw new Error(`Sunucu hatası: ${response.status}`);
+    const errorData = await response.json().catch(() => ({}));
+    const errorMessage = errorData.detail || `Sunucu hatası: ${response.status}`;
+    throw new Error(errorMessage);
   }
 
   const data = await response.json();

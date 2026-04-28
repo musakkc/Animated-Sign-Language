@@ -12,22 +12,47 @@ import {
 } from 'react-native';
 import { useAppStore } from '../store/appStore';
 import { checkBackendHealth } from '../services/whisperApi';
+import { autoDiscoverBackend } from '../services/autoDiscovery';
 
 export default function SettingsScreen() {
   const { backendUrl, animationSpeed, setBackendUrl, setAnimationSpeed, clearHistory } =
     useAppStore();
   const [urlInput, setUrlInput] = useState(backendUrl);
   const [testing, setTesting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const handleTestConnection = async () => {
     setTesting(true);
+    setStatusMsg('Mevcut adres deneniyor...');
     try {
+      // 1. Önce mevcut URL'yi dene
       const ok = await checkBackendHealth(urlInput);
       if (ok) {
-        Alert.alert('✅ Bağlantı Başarılı', 'Backend sunucusuna bağlandı!');
         setBackendUrl(urlInput);
+        setStatusMsg(null);
+        Alert.alert('✅ Bağlantı Başarılı', `Sunucuya bağlandı!\n${urlInput}`);
+        return;
+      }
+
+      // 2. Başarısız ise ağı otomatik tara
+      setStatusMsg('Önce mevcut adres denendi, bulunamadı. Ağ taranıyor...');
+      const discoveredUrl = await autoDiscoverBackend((msg) => setStatusMsg(msg));
+
+      if (discoveredUrl) {
+        setUrlInput(discoveredUrl);
+        setBackendUrl(discoveredUrl);
+        setStatusMsg(null);
+        Alert.alert(
+          '✅ Sunucu Bulundu!',
+          `Otomatik keşfedildi:\n${discoveredUrl}`,
+          [{ text: 'Harika!' }]
+        );
       } else {
-        Alert.alert('❌ Bağlantı Hatası', 'Sunucuya erişilemiyor.\nSunucunun çalıştığını kontrol edin.');
+        setStatusMsg(null);
+        Alert.alert(
+          '❌ Bulunamadı',
+          'Ağınızdaki backend sunucu bulunamadı.\n\n• Backend çalışıyor mu?\n• Telefon ve bilgisayar aynı Wi-Fi\'de mi?'
+        );
       }
     } finally {
       setTesting(false);
@@ -64,12 +89,19 @@ export default function SettingsScreen() {
             autoCorrect={false}
             keyboardType="url"
           />
+          {statusMsg && (
+            <View style={styles.statusBox}>
+              <Text style={styles.statusBoxText}>🔍 {statusMsg}</Text>
+            </View>
+          )}
           <TouchableOpacity
             style={[styles.button, testing && styles.buttonDisabled]}
             onPress={handleTestConnection}
             disabled={testing}
           >
-            <Text style={styles.buttonText}>{testing ? 'Test ediliyor...' : 'Bağlantıyı Test Et'}</Text>
+            <Text style={styles.buttonText}>
+              {testing ? '🔍 Aranıyor...' : '🔗 Bağlantıyı Test Et & Otomatik Bul'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -114,12 +146,12 @@ export default function SettingsScreen() {
 
         {/* Hakkında */}
         <View style={styles.aboutBox}>
-          <Text style={styles.aboutTitle}>🤟 TİD Altyazı</Text>
+          <Text style={styles.aboutTitle}>TİD Altyazı</Text>
           <Text style={styles.aboutText}>
             Türk İşaret Dili (TİD) altyazı ve animasyon uygulaması.{'\n'}
             İşitme engelliler için geliştirilmiştir.
           </Text>
-          <Text style={styles.aboutVersion}>v1.0.0 · Yapay Zeka: Whisper (small)</Text>
+          <Text style={styles.aboutVersion}>v1.0.0 · Yapay Zeka: Whisper (medium)</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -198,4 +230,13 @@ const styles = StyleSheet.create({
   aboutTitle: { fontSize: 22, color: '#fff', fontWeight: '700', marginBottom: 8 },
   aboutText: { color: '#6b7280', textAlign: 'center', lineHeight: 22, marginBottom: 8 },
   aboutVersion: { color: '#374151', fontSize: 12 },
+  statusBox: {
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#7c3aed',
+  },
+  statusBoxText: { color: '#a78bfa', fontSize: 12, lineHeight: 18 },
 });

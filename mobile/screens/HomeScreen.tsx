@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
   ScrollView,
   StatusBar,
   Animated,
@@ -16,7 +15,7 @@ import { useAudioRecorder } from '../services/audioRecorder';
 import { transcribeAudio, checkBackendHealth } from '../services/whisperApi';
 import { textToSignQueue } from '../services/signLanguageMapper';
 
-const { width } = Dimensions.get('window');
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function HomeScreen() {
   const {
@@ -26,36 +25,40 @@ export default function HomeScreen() {
     setRecording, setProcessing,
     setCurrentSubtitle, addToHistory,
     setAnimationQueue,
+    setToggleRecordingFn,
   } = useAppStore();
 
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
-  const [chunkCount, setChunkCount] = useState(0);
   const backendOnlineRef = useRef<boolean | null>(null);
-  const previousTextRef = useRef<string>(''); // Bağlam için önceki transkript
+  const previousTextRef = useRef<string>('');
 
-  // Animasyon referansları
+  // Sessizlik ile cümle tespiti
+  const silenceCountRef = useRef(0);
+  const currentSentencePartsRef = useRef<string[]>([]);
+
+  // Animasyonlar
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const subtitleFade = useRef(new Animated.Value(1)).current; // 1'den başla, her zaman görünür
+  const subtitleFade = useRef(new Animated.Value(1)).current;
 
   // Backend sağlık kontrolü
   useEffect(() => {
     const checkHealth = async () => {
       const ok = await checkBackendHealth(backendUrl);
       setBackendOnline(ok);
-      backendOnlineRef.current = ok; // ref'i de güncelle
+      backendOnlineRef.current = ok;
     };
     checkHealth();
     const interval = setInterval(checkHealth, 15000);
     return () => clearInterval(interval);
   }, [backendUrl]);
 
-  // Pulse animasyonu (kayıt sırasında)
+  // Pulse animasyonu
   useEffect(() => {
     if (isRecording) {
       Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.2, duration: 600, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1.0, duration: 600, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.15, duration: 700, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.0, duration: 700, useNativeDriver: true }),
         ])
       ).start();
     } else {
@@ -64,29 +67,44 @@ export default function HomeScreen() {
     }
   }, [isRecording]);
 
-  // Chunk işleme
+  // Chunk işleme — sessizlik tespiti ile cümle birleştirme
   const handleChunkReady = useCallback(
     async (uri: string) => {
-      if (!backendOnlineRef.current) {
-        console.log('Backend offline, chunk atlandı');
-        return;
-      }
+      if (!backendOnlineRef.current) return;
       setProcessing(true);
-      setChunkCount((c) => c + 1);
       try {
         const text = await transcribeAudio(uri, backendUrl, previousTextRef.current);
+
         if (text && text.length > 0) {
-          setCurrentSubtitle(text);
-          addToHistory(text);
-          previousTextRef.current = text; // Sonraki chunk için bağlamı sakla
+          // Konuşma var → sessizlik sayacını sıfırla, cümleye ekle
+          silenceCountRef.current = 0;
+          currentSentencePartsRef.current.push(text);
+          previousTextRef.current = text;
 
-          // Altyazı fade animasyonu (0.3'ten 1'e — hiç kaybolmaz)
-          subtitleFade.setValue(0.3);
-          Animated.timing(subtitleFade, { toValue: 1, duration: 300, useNativeDriver: true }).start();
+          // Cümlenin tamamını birleştir ve anlık göster
+          const liveSentence = currentSentencePartsRef.current.join(' ');
+          setCurrentSubtitle(liveSentence);
 
-          // Animasyon kuyruğunu oluştur
+          // Fade animasyonu
+          subtitleFade.setValue(0.4);
+          Animated.timing(subtitleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+
+          // İşaret dili kuyruğu
           const queue = textToSignQueue(text);
           setAnimationQueue(queue.map((q) => `${q.type}:${q.value}`));
+
+        } else {
+          // Sessizlik → cümle sonu tespiti
+          silenceCountRef.current++;
+          if (silenceCountRef.current >= 1 && currentSentencePartsRef.current.length > 0) {
+            // Cümle tamamlandı → geçmişe ekle
+            const completeSentence = currentSentencePartsRef.current.join(' ');
+            addToHistory(completeSentence);
+            currentSentencePartsRef.current = [];
+            previousTextRef.current = '';
+            // Altyazıyı soluklaştır (yeni cümle bekliyor)
+            Animated.timing(subtitleFade, { toValue: 0.4, duration: 500, useNativeDriver: true }).start();
+          }
         }
       } catch (error: any) {
         console.error('Chunk hatası:', error.message);
@@ -94,263 +112,192 @@ export default function HomeScreen() {
         setProcessing(false);
       }
     },
-    [backendUrl, backendOnline]
+    [backendUrl]
   );
 
   const { startRecording, stopRecording } = useAudioRecorder({
     onChunkReady: handleChunkReady,
-    chunkDurationMs: 6000, // 6 saniye — daha az sınır kesimi
+    chunkDurationMs: 4000, // 4 saniye — daha doğru anlama için artırıldı
   });
 
-  const toggleRecording = async () => {
-    if (!backendOnline) {
+  // Mikrofon toggle fonksiyonunu store'a kaydet (App.tsx kullanacak)
+  const toggleRecording = useCallback(async () => {
+    if (!backendOnline && !isRecording) {
       Alert.alert(
         'Bağlantı Hatası',
-        `Backend sunucusuna bağlanılamıyor.\n\nSunucu çalışıyor mu?\nAdres: ${backendUrl}\n\nAyarlar'dan IP adresini kontrol edin.`,
+        `Sunucuya bağlanılamıyor.\n${backendUrl}\n\nAyarlar'dan bağlantıyı kontrol edin.`,
         [{ text: 'Tamam' }]
       );
       return;
     }
-
     if (isRecording) {
       setRecording(false);
-      previousTextRef.current = ''; // Bağlamı sıfırla
+      previousTextRef.current = '';
+      currentSentencePartsRef.current = [];
+      silenceCountRef.current = 0;
       await stopRecording();
     } else {
-      setChunkCount(0);
-      previousTextRef.current = ''; // Yeni kayıt için bağlamı sıfırla
       setRecording(true);
+      currentSentencePartsRef.current = [];
+      previousTextRef.current = '';
+      silenceCountRef.current = 0;
       await startRecording();
     }
-  };
+  }, [backendOnline, isRecording, backendUrl, startRecording, stopRecording]);
+
+  useEffect(() => {
+    setToggleRecordingFn(toggleRecording);
+  }, [toggleRecording]);
 
   const statusColor = backendOnline === null ? '#888' : backendOnline ? '#4ade80' : '#f87171';
-  const statusText =
-    backendOnline === null ? 'Kontrol ediliyor...' : backendOnline ? 'Sunucu bağlı' : 'Sunucu bağlı değil';
+  const statusText = backendOnline === null
+    ? 'Kontrol ediliyor...'
+    : backendOnline ? '● Sunucu bağlı' : '● Bağlantı yok';
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0f0f1a" />
+      <StatusBar barStyle="light-content" backgroundColor="#0a0a14" />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>TİD Altyazı</Text>
-          <Text style={styles.headerSub}>Türk İşaret Dili</Text>
-        </View>
-        <View style={styles.statusBadge}>
-          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+      {/* ══ Üst: Animasyon Alanı ══ */}
+      <View style={styles.animationArea}>
+        {/* Köşe: Bağlantı durumu */}
+        <View style={styles.statusChip}>
           <Text style={[styles.statusText, { color: statusColor }]}>{statusText}</Text>
         </View>
-      </View>
 
-      {/* Ana Altyazı Alanı */}
-      <View style={styles.subtitleCard}>
-        {currentSubtitle ? (
-          <Animated.Text style={[styles.subtitleText, { opacity: subtitleFade }]}>
-            {currentSubtitle}
-          </Animated.Text>
-        ) : (
-          <Text style={styles.subtitlePlaceholder}>
-            {isRecording ? 'Dinleniyor...' : 'Kayıt başlatmak için mikrofona dokunun'}
-          </Text>
-        )}
+        {/* Animasyon placeholder */}
+        <View style={styles.avatarPlaceholder}>
+          <Text style={styles.avatarLabel}>Animasyon Alanı</Text>
+          <Text style={styles.avatarSub}>3D Avatar gösterilecek</Text>
+        </View>
 
+        {/* İşleniyor göstergesi */}
         {isProcessing && (
-          <View style={styles.processingBadge}>
-            <Text style={styles.processingText}>⚙ İşleniyor...</Text>
+          <View style={styles.processingPill}>
+            <Text style={styles.processingText}>⚙ Çözümleniyor...</Text>
           </View>
         )}
       </View>
 
-      {/* Kayıt Butonu */}
-      <View style={styles.micContainer}>
-        <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-          <TouchableOpacity
-            style={[styles.micButton, isRecording && styles.micButtonActive]}
-            onPress={toggleRecording}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.micIcon}>{isRecording ? '⏹' : '🎙'}</Text>
-          </TouchableOpacity>
-        </Animated.View>
-        <Text style={[styles.micLabel, { marginTop: 12 }]}>
-          {isRecording
-            ? `Kaydediliyor · ${chunkCount} parça işlendi`
-            : 'Başlatmak için dokun'}
-        </Text>
+      {/* ══ Orta: Anlık Altyazı ══ */}
+      <View style={styles.subtitleSection}>
+        <Animated.Text
+          style={[styles.subtitleText, { opacity: subtitleFade }]}
+          numberOfLines={3}
+        >
+          {currentSubtitle || (isRecording ? '🎙 Dinleniyor...' : 'Konuşmayı başlatmak için mikrofona dokunun')}
+        </Animated.Text>
       </View>
 
-      {/* Geçmiş */}
-      {subtitleHistory.length > 0 && (
-        <View style={styles.historyContainer}>
-          <Text style={styles.historyTitle}>Geçmiş</Text>
-          <ScrollView style={styles.historyScroll} showsVerticalScrollIndicator={false}>
-            {subtitleHistory.map((entry) => (
+      {/* ══ Alt: Geçmiş ══ */}
+      <View style={styles.historySection}>
+        <Text style={styles.historyLabel}>GEÇMİŞ</Text>
+        <ScrollView
+          style={styles.historyScroll}
+          contentContainerStyle={styles.historyContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {subtitleHistory.length === 0 ? (
+            <Text style={styles.historyEmpty}>Henüz kayıt yok</Text>
+          ) : (
+            subtitleHistory.map((entry) => (
               <View key={entry.id} style={styles.historyItem}>
-                <Text style={styles.historyText}>{entry.text}</Text>
-                <Text style={styles.historyTime}>
-                  {entry.timestamp.toLocaleTimeString('tr-TR', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                  })}
+                <Text style={styles.historyItemText}>{entry.text}</Text>
+                <Text style={styles.historyItemTime}>
+                  {entry.timestamp.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                 </Text>
               </View>
-            ))}
-          </ScrollView>
-        </View>
-      )}
+            ))
+          )}
+        </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0f0f1a',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 12,
-  },
-  headerTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: 0.5,
-  },
-  headerSub: {
-    fontSize: 13,
-    color: '#6b7280',
-    marginTop: 2,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  subtitleCard: {
-    marginHorizontal: 20,
-    marginTop: 12,
-    backgroundColor: '#1a1a2e',
-    borderRadius: 20,
-    padding: 24,
-    minHeight: 160,
+  container: { flex: 1, backgroundColor: '#0a0a14' },
+
+  // Animasyon alanı — üst yarı
+  animationArea: {
+    height: SCREEN_HEIGHT * 0.42,
+    backgroundColor: '#0f0f1e',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e1e3a',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#2d2d4e',
+    alignItems: 'center',
     position: 'relative',
   },
-  subtitleText: {
-    fontSize: 28,
-    fontWeight: '600',
-    color: '#f0f0ff',
-    lineHeight: 40,
-    textAlign: 'center',
-  },
-  subtitlePlaceholder: {
-    fontSize: 16,
-    color: '#4b5563',
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  processingBadge: {
+  statusChip: {
     position: 'absolute',
-    bottom: 12,
+    top: 12,
     right: 12,
-    backgroundColor: '#7c3aed22',
+    backgroundColor: '#1a1a2e',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
   },
-  processingText: {
-    color: '#a78bfa',
-    fontSize: 12,
+  statusText: { fontSize: 11, fontWeight: '600' },
+  avatarPlaceholder: { alignItems: 'center' },
+  avatarIcon: { fontSize: 64, marginBottom: 12 },
+  avatarLabel: { color: '#4b5563', fontSize: 14, fontWeight: '600', letterSpacing: 1 },
+  avatarSub: { color: '#374151', fontSize: 11, marginTop: 4 },
+  processingPill: {
+    position: 'absolute',
+    bottom: 12,
+    backgroundColor: '#7c3aed22',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#7c3aed44',
   },
-  micContainer: {
-    alignItems: 'center',
-    marginTop: 32,
-  },
-  micButton: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: '#7c3aed',
+  processingText: { color: '#a78bfa', fontSize: 12 },
+
+  // Altyazı bölümü
+  subtitleSection: {
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    minHeight: 80,
     justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#7c3aed',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a1a2e',
   },
-  micButtonActive: {
-    backgroundColor: '#dc2626',
-    shadowColor: '#dc2626',
-  },
-  micIcon: {
-    fontSize: 36,
-  },
-  micLabel: {
-    color: '#6b7280',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  historyContainer: {
-    flex: 1,
-    marginTop: 24,
-    marginHorizontal: 20,
-  },
-  historyTitle: {
-    fontSize: 14,
+  subtitleText: {
+    fontSize: 22,
     fontWeight: '600',
-    color: '#6b7280',
-    marginBottom: 10,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    color: '#f0f0ff',
+    lineHeight: 32,
+    textAlign: 'center',
   },
-  historyScroll: {
+
+  // Geçmiş bölümü
+  historySection: {
     flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 10,
   },
-  historyItem: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: 12,
-    padding: 14,
+  historyLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#374151',
+    letterSpacing: 1.5,
     marginBottom: 8,
+  },
+  historyScroll: { flex: 1 },
+  historyContent: { paddingBottom: 16 },
+  historyEmpty: { color: '#374151', fontSize: 13, textAlign: 'center', marginTop: 20 },
+  historyItem: {
+    backgroundColor: '#141428',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 6,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    borderLeftWidth: 3,
+    borderLeftWidth: 2,
     borderLeftColor: '#7c3aed',
   },
-  historyText: {
-    flex: 1,
-    color: '#d1d5db',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  historyTime: {
-    color: '#4b5563',
-    fontSize: 11,
-    marginLeft: 8,
-    marginTop: 2,
-  },
+  historyItemText: { flex: 1, color: '#d1d5db', fontSize: 14, lineHeight: 20 },
+  historyItemTime: { color: '#374151', fontSize: 10, marginLeft: 8, marginTop: 2 },
 });

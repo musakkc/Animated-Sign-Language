@@ -35,6 +35,9 @@ interface AppState {
   setAnimating: (val: boolean) => void;
   setBackendUrl: (url: string) => void;
   setAnimationSpeed: (speed: number) => void;
+  // App.tsx'teki mikrofon butonu için
+  toggleRecordingFn: (() => Promise<void>) | null;
+  setToggleRecordingFn: (fn: () => Promise<void>) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -45,7 +48,7 @@ export const useAppStore = create<AppState>((set) => ({
   animationQueue: [],
   currentAnimationWord: null,
   isAnimating: false,
-  backendUrl: 'http://10.60.3.162:8000', // Varsayılan — ayarlardan değiştirilebilir
+  backendUrl: 'http://10.14.168.202:8000', // Varsayılan — ayarlardan değiştirilebilir
   animationSpeed: 1.0,
 
   setRecording: (val) => set({ isRecording: val }),
@@ -72,4 +75,6 @@ export const useAppStore = create<AppState>((set) => ({
   setAnimating: (val) => set({ isAnimating: val }),
   setBackendUrl: (url) => set({ backendUrl: url }),
   setAnimationSpeed: (speed) => set({ animationSpeed: speed }),
+  toggleRecordingFn: null,
+  setToggleRecordingFn: (fn) => set({ toggleRecordingFn: fn }),
 }));

@@ -6,10 +6,53 @@ from pydantic import BaseModel
 import tempfile
 import os
 import logging
+import sys
 
 # Loglama
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Windows'ta CUDA kütüphanelerini bul ve ekle
+if sys.platform == "win32":
+    import site
+    packages_paths = site.getsitepackages() + [site.getusersitepackages()]
+    for base_path in packages_paths:
+        nvidia_path = os.path.join(base_path, "nvidia")
+        if os.path.exists(nvidia_path):
+            for sub in ["cublas", "cudnn", "cuda_nvrtc"]:
+                bin_path = os.path.join(nvidia_path, sub, "bin")
+                if os.path.exists(bin_path):
+                    logger.info(f"CUDA DLL yolu eklendi: {bin_path}")
+                    os.add_dll_directory(bin_path)
+
+# FFmpeg kontrolü ve workaround
+import subprocess
+ffmpeg_found = False
+try:
+    subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+    logger.info("FFmpeg bulundu ✅")
+    ffmpeg_found = True
+except (subprocess.CalledProcessError, FileNotFoundError):
+    # CapCut içindeki ffmpeg'i dene (kullanıcının sisteminde tespit edildi)
+    capcut_ffmpeg = r"C:\Users\musak\AppData\Local\CapCut\Apps\8.5.0.3590"
+    if os.path.exists(os.path.join(capcut_ffmpeg, "ffmpeg.exe")):
+        os.environ["PATH"] += os.pathsep + capcut_ffmpeg
+        logger.info(f"FFmpeg için CapCut yolu eklendi: {capcut_ffmpeg} ✅")
+        ffmpeg_found = True
+    else:
+        logger.error("❌ FFmpeg BULUNAMADI! Lütfen FFmpeg yükleyin ve PATH'e ekleyin.")
+
+# Whisper modelini başlat (Windows'ta CUDA DLL sorunları nedeniyle CPU tercih ediliyor)
+try:
+    # Önce CPU ile güvenli başlat (en garantisi)
+    logger.info("Whisper modeli yükleniyor (CPU modunda)...")
+    whisper_model = WhisperModel("medium", device="cpu", compute_type="int8")
+    logger.info("Whisper medium modeli CPU üzerinde hazır ✅")
+    current_device = "cpu"
+except Exception as e:
+    logger.error(f"❌ Model yüklenemedi: {e}")
+    raise e
+
 
 app = FastAPI(title="TİD Altyazı API", version="1.0.0")
 
@@ -22,12 +65,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Whisper modelini başlat (ilk çalıştırmada model indirilir)
-# "small" modeli Türkçe için iyi bir hız/doğruluk dengesi sağlar
-# Alternatifler: "tiny" (çok hızlı), "medium" (daha doğru ama yavaş)
-logger.info("Whisper modeli yükleniyor...")
-whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
-logger.info("Whisper modeli hazır ✅")
 
 
 @app.get("/")
@@ -37,7 +74,12 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "model": "whisper-small", "dil": "tr"}
+    return {
+        "status": "ok",
+        "model": "whisper-medium",
+        "device": current_device,
+        "dil": "tr"
+    }
 
 
 class TranscribeRequest(BaseModel):
@@ -45,21 +87,23 @@ class TranscribeRequest(BaseModel):
     previous_text: str = ""
 
 
-def run_whisper(tmp_path: str, previous_text: str) -> str:
-    """Whisper ile transkripsiyon çalıştır."""
-    segments, info = whisper_model.transcribe(
+def run_whisper(tmp_path: str, previous_text: str = "") -> str:
+    """Whisper ile transkripsiyon çalıştır — kısa chunk'lar için optimize edilmiş."""
+    segments, _ = whisper_model.transcribe(
         tmp_path,
         language="tr",
-        beam_size=5,
+        beam_size=10,        # Daha derin arama (doğruluğu artırır)
+        patience=2.0,        # Aramada daha titiz davranır
         temperature=0.0,
-        condition_on_previous_text=True,
-        initial_prompt=previous_text if previous_text else "Türkçe konuşma.",
+        condition_on_previous_text=False, # Halüsinasyonları (tekrarları) önler
+        initial_prompt=previous_text if previous_text else None,
         vad_filter=True,
         vad_parameters=dict(
-            min_silence_duration_ms=500,
+            min_silence_duration_ms=400, # Sessizlik tespiti iyileştirildi
             speech_pad_ms=200,
             threshold=0.5,
-        )
+        ),
+        no_speech_threshold=0.6,
     )
     transcript = " ".join([seg.text.strip() for seg in segments])
     return transcript.strip()
@@ -83,7 +127,9 @@ async def transcribe_base64(req: TranscribeRequest):
         logger.info(f"Transkript: '{transcript}'")
         return {"success": True, "text": transcript}
     except Exception as e:
-        logger.error(f"Transkripsiyon hatası: {e}")
+        import traceback
+        error_msg = traceback.format_exc()
+        logger.error(f"Transkripsiyon hatası:\n{error_msg}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(tmp_path):
@@ -110,7 +156,9 @@ async def transcribe_audio(
         logger.info(f"Transkript: '{transcript}'")
         return {"success": True, "text": transcript}
     except Exception as e:
-        logger.error(f"Transkripsiyon hatası: {e}")
+        import traceback
+        error_msg = traceback.format_exc()
+        logger.error(f"Transkripsiyon hatası:\n{error_msg}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(tmp_path):
