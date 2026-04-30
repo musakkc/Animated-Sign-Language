@@ -3,10 +3,17 @@ import { Audio } from 'expo-av';
 
 export interface AudioRecorderOptions {
   onChunkReady: (uri: string) => void;
-  chunkDurationMs?: number;
+  chunkDurationMs?: number;       // maksimum chunk süresi (güvenlik sınırı)
+  onFinalChunkReady?: (uri: string) => void;
 }
 
-const RECORDING_OPTIONS = {
+// VAD (Sessizlik tespiti) parametreleri
+const SILENCE_THRESHOLD_DB = -40;  // dBFS — altı = sessizlik (Android: ~-40, iOS: ~-50)
+const MIN_CHUNK_MS = 800;           // en az bu kadar ses kaydedilmeden gönderme
+const SILENCE_TRIGGER_MS = 550;     // bu kadar sessizlik → hemen gönder
+
+const RECORDING_OPTIONS: Audio.RecordingOptions = {
+  isMeteringEnabled: true,          // ses seviyesi ölçümü — VAD için zorunlu
   android: {
     extension: '.m4a',
     outputFormat: Audio.AndroidOutputFormat.MPEG_4,
@@ -29,96 +36,187 @@ const RECORDING_OPTIONS = {
   web: { mimeType: 'audio/webm', bitsPerSecond: 64000 },
 };
 
-export function useAudioRecorder({ onChunkReady, chunkDurationMs = 3000 }: AudioRecorderOptions) {
-  // Aktif kayıt oturumu için ID — stopRecording() ID'yi artırarak eski döngüleri geçersiz kılar
+/**
+ * Global mutex — aynı anda yalnızca bir prepareToRecordAsync çalışsın.
+ * (Tab geçişlerinde HomeScreen unmount/remount olsa bile güvenli)
+ */
+let globalPrepareLock: Promise<void> = Promise.resolve();
+let globalReleaseLock: (() => void) | null = null;
+
+function acquirePrepareLock(): Promise<void> {
+  // Zincir: önceki kilit bitmeden yenisi başlamaz
+  const prev = globalPrepareLock;
+  let release!: () => void;
+  globalPrepareLock = new Promise<void>((resolve) => {
+    globalReleaseLock = release = resolve;
+  });
+  return prev; // öncekinin bitmesini bekle
+}
+
+function releasePrepareLock() {
+  if (globalReleaseLock) {
+    globalReleaseLock();
+    globalReleaseLock = null;
+  }
+}
+
+export function useAudioRecorder({
+  onChunkReady,
+  chunkDurationMs = 4000,
+  onFinalChunkReady,
+}: AudioRecorderOptions) {
   const sessionIdRef = useRef(0);
-  // Anlık Recording objesi — stopRecording() bunu doğrudan durdurur
   const currentRecordingRef = useRef<Audio.Recording | null>(null);
 
+  // Callback ref'leri — stale closure önlenir
   const onChunkReadyRef = useRef(onChunkReady);
-  useEffect(() => {
-    onChunkReadyRef.current = onChunkReady;
-  }, [onChunkReady]);
+  const onFinalChunkReadyRef = useRef(onFinalChunkReady);
+  useEffect(() => { onChunkReadyRef.current = onChunkReady; }, [onChunkReady]);
+  useEffect(() => { onFinalChunkReadyRef.current = onFinalChunkReady; }, [onFinalChunkReady]);
 
-  /**
-   * Tek bir chunk kaydeder. Döngü, her chunk bittikten sonra kendini çağırır.
-   * sessionId sayesinde eski oturumların döngüleri otomatik durur.
-   */
+  // Component unmount olduğunda temizle (tab geçişi güvenliği)
+  useEffect(() => {
+    return () => {
+      sessionIdRef.current += 1;
+      // Mutex'i zorla serbest bırak
+      releasePrepareLock();
+      const rec = currentRecordingRef.current;
+      currentRecordingRef.current = null;
+      if (rec) {
+        rec.stopAndUnloadAsync().catch(() => {});
+      }
+    };
+  }, []);
+
   const recordLoop = useCallback(async (sessionId: number) => {
-    // Oturum geçersizleştiyse dur
     if (sessionIdRef.current !== sessionId) return;
 
     let recording: Audio.Recording | null = null;
 
     try {
-      // Kayıt oluştur ve başlat
+      // ── Mutex: bir önceki prepare/start tamamlanana kadar bekle ───────
+      await acquirePrepareLock();
+
+      // Kilit alındıktan sonra oturum hâlâ geçerli mi?
+      if (sessionIdRef.current !== sessionId) {
+        releasePrepareLock();
+        return;
+      }
+
       recording = new Audio.Recording();
       await recording.prepareToRecordAsync(RECORDING_OPTIONS);
 
-      // Hâlâ aynı oturumda mıyız?
       if (sessionIdRef.current !== sessionId) {
-        try { await recording.stopAndUnloadAsync(); } catch { /* yoksay */ }
+        releasePrepareLock();
+        try { await recording.stopAndUnloadAsync(); } catch { }
+        recording = null;
         return;
       }
 
       currentRecordingRef.current = recording;
       await recording.startAsync();
 
-      // Chunk süresini bekle
-      await new Promise<void>((resolve) => setTimeout(resolve, chunkDurationMs));
+      // startAsync tamamlandı → kilit serbest bırakılabilir
+      releasePrepareLock();
 
-      // Oturum hâlâ geçerli mi?
+      // ── VAD: Sessizlik tabanlı erken gönderim ──────────────────────────
+      let speechDetected = false;       // Bu chunk'ta konuşma var mı?
+      let silenceStartMs: number | null = null;
+      let vadResolve: (() => void) | null = null;
+
+      recording.setOnRecordingStatusUpdate((status) => {
+        if (!status.isRecording) return;
+
+        const db = status.metering ?? -100;
+        const elapsed = status.durationMillis ?? 0;
+
+        if (db > SILENCE_THRESHOLD_DB) {
+          // Konuşma var
+          speechDetected = true;
+          silenceStartMs = null;
+        } else {
+          // Sessizlik
+          if (speechDetected && silenceStartMs === null) {
+            silenceStartMs = Date.now(); // sessizlik başladı
+          }
+          if (
+            silenceStartMs !== null &&
+            Date.now() - silenceStartMs >= SILENCE_TRIGGER_MS &&
+            elapsed >= MIN_CHUNK_MS
+          ) {
+            // Yeterli sessizlik → hemen gönder
+            vadResolve?.();
+            vadResolve = null;
+          }
+        }
+      });
+
+      // Metering güncellemesi 100ms'de bir gelsin (hızlı tepki)
+      await recording.setProgressUpdateInterval(100);
+
+      // Maksimum süre (güvenlik) VEYA VAD erken tetiklemesi bekle
+      await new Promise<void>((resolve) => {
+        vadResolve = resolve;
+        setTimeout(resolve, chunkDurationMs);
+      });
+
+      // Oturum geçerliliği kontrol
       if (sessionIdRef.current !== sessionId) {
-        // stopRecording() zaten durdurdu — burada tekrar durdurma
         currentRecordingRef.current = null;
         return;
       }
 
-      // Kaydı durdur, URI al
+      // Kaydı durdur ve URI al
       currentRecordingRef.current = null;
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       recording = null;
 
-      if (uri) {
-        onChunkReadyRef.current(uri); 
+      // Sadece konuşma içeren chunk'ları gönder
+      if (uri && speechDetected) {
+        onChunkReadyRef.current(uri);
       }
 
-      // Race condition önlemek için kısa bekleme
-      await new Promise(r => setTimeout(r, 150));
-      recordLoop(sessionId);
+      // Kısa bekleme sonrası döngü devam eder
+      await new Promise(r => setTimeout(r, 100));
+      if (sessionIdRef.current === sessionId) {
+        recordLoop(sessionId);
+      }
 
     } catch (error: any) {
+      // Hata durumunda kilidi mutlaka serbest bırak
+      releasePrepareLock();
       currentRecordingRef.current = null;
       if (recording) {
         try { await recording.stopAndUnloadAsync(); } catch { }
+        recording = null;
       }
       console.error('Chunk kayıt hatası:', error?.message ?? error);
-      
-      // Hata sonrası toparlanma
-      if (error?.message?.includes('Only one Recording')) {
-        await new Promise(r => setTimeout(r, 500));
-        recordLoop(sessionId);
+
+      if (
+        error?.message?.includes('Only one Recording') &&
+        sessionIdRef.current === sessionId
+      ) {
+        await new Promise(r => setTimeout(r, 800));
+        if (sessionIdRef.current === sessionId) recordLoop(sessionId);
       }
+      // Diğer hatalar (cascading): sessizce bırak
     }
   }, [chunkDurationMs]);
 
   const startRecording = useCallback(async () => {
-    // Aynı session devam ediyorsa tekrar başlatma
     const newSessionId = sessionIdRef.current + 1;
-
     try {
       const { granted } = await Audio.requestPermissionsAsync();
       if (!granted) throw new Error('Mikrofon izni verilmedi');
 
-      // Ses modunu kayıt için ayarla
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
 
-      sessionIdRef.current = newSessionId; // Oturumu aktif et
-      recordLoop(newSessionId);            // Döngüyü başlat (await değil)
+      sessionIdRef.current = newSessionId;
+      recordLoop(newSessionId);
     } catch (error) {
       console.error('Kayıt başlatma hatası:', error);
       throw error;
@@ -126,20 +224,26 @@ export function useAudioRecorder({ onChunkReady, chunkDurationMs = 3000 }: Audio
   }, [recordLoop]);
 
   const stopRecording = useCallback(async () => {
-    // Session ID'yi artır → aktif tüm döngüler bir sonraki kontrolde durur
     sessionIdRef.current += 1;
+    // Mutex'i zorla serbest bırak (stop sırasında kilit kalmış olabilir)
+    releasePrepareLock();
 
-    // Aktif Recording objesini DOĞRUDAN durdur (döngüyü bekleme)
     const rec = currentRecordingRef.current;
     currentRecordingRef.current = null;
     if (rec) {
-      try { await rec.stopAndUnloadAsync(); } catch { /* zaten durmuş olabilir */ }
+      try {
+        await rec.stopAndUnloadAsync();
+        const uri = rec.getURI();
+        if (uri) {
+          const callback = onFinalChunkReadyRef.current ?? onChunkReadyRef.current;
+          callback(uri);
+        }
+      } catch { }
     }
 
-    // iOS ses modunu sıfırla
     try {
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
-    } catch { /* yoksay */ }
+    } catch { }
   }, []);
 
   return { startRecording, stopRecording };

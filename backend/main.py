@@ -44,10 +44,9 @@ except (subprocess.CalledProcessError, FileNotFoundError):
 
 # Whisper modelini başlat (Windows'ta CUDA DLL sorunları nedeniyle CPU tercih ediliyor)
 try:
-    # Önce CPU ile güvenli başlat (en garantisi)
-    logger.info("Whisper modeli yükleniyor (CPU modunda)...")
-    whisper_model = WhisperModel("medium", device="cpu", compute_type="int8")
-    logger.info("Whisper medium modeli CPU üzerinde hazır ✅")
+    logger.info("Whisper modeli yükleniyor (small, CPU)...")
+    whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+    logger.info("Whisper small modeli CPU üzerinde hazır ✅")
     current_device = "cpu"
 except Exception as e:
     logger.error(f"❌ Model yüklenemedi: {e}")
@@ -87,26 +86,66 @@ class TranscribeRequest(BaseModel):
     previous_text: str = ""
 
 
+# Halüsinasyon / sahte çıktı olarak bilinen yaygın Whisper örnekleri
+HALLUCINATION_PATTERNS = [
+    "altyaz", "subtitle", "transcript", "www.", "http",
+    "teşekkür ederim", "teşekkürler", "hoşça kal",
+    "م", "ك", "المدينة",  # Arapça karakter kaçışları
+]
+
+
+def is_hallucination(text: str) -> bool:
+    """Bilinen sahte/halüsinasyon çıktılarını filtreler."""
+    if not text:
+        return True
+    t = text.lower().strip()
+    # Çok kısa çıktılar (1-2 karakter) — anlamsız
+    if len(t) <= 2:
+        return True
+    for pattern in HALLUCINATION_PATTERNS:
+        if pattern in t:
+            return True
+    return False
+
+
 def run_whisper(tmp_path: str, previous_text: str = "") -> str:
-    """Whisper ile transkripsiyon çalıştır — kısa chunk'lar için optimize edilmiş."""
-    segments, _ = whisper_model.transcribe(
+    """Whisper ile transkripsiyon — hız öncelikli (small model + greedy search)."""
+    segments, info = whisper_model.transcribe(
         tmp_path,
         language="tr",
-        beam_size=10,        # Daha derin arama (doğruluğu artırır)
-        patience=2.0,        # Aramada daha titiz davranır
+        beam_size=1,                # Greedy search — en hızlı (doğruluk kaybı minimal)
         temperature=0.0,
-        condition_on_previous_text=False, # Halüsinasyonları (tekrarları) önler
-        initial_prompt=previous_text if previous_text else None,
+        condition_on_previous_text=False,
+        initial_prompt=None,
         vad_filter=True,
         vad_parameters=dict(
-            min_silence_duration_ms=400, # Sessizlik tespiti iyileştirildi
-            speech_pad_ms=200,
+            min_silence_duration_ms=200,  # Daha kısa sessizlik tespiti
+            speech_pad_ms=80,
             threshold=0.5,
         ),
-        no_speech_threshold=0.6,
+        no_speech_threshold=0.7,
+        suppress_blank=True,
+        word_timestamps=False,
     )
-    transcript = " ".join([seg.text.strip() for seg in segments])
-    return transcript.strip()
+
+    parts = []
+    for seg in segments:
+        # Segment başına no_speech olasılığı kontrolü
+        if hasattr(seg, 'no_speech_prob') and seg.no_speech_prob > 0.65:
+            logger.info(f"Segment atlandı (no_speech_prob={seg.no_speech_prob:.2f}): '{seg.text}'")
+            continue
+        cleaned = seg.text.strip()
+        if cleaned:
+            parts.append(cleaned)
+
+    transcript = " ".join(parts).strip()
+
+    # Halüsinasyon kontrolü
+    if is_hallucination(transcript):
+        logger.warning(f"Halüsinasyon tespit edildi, filtrelendi: '{transcript}'")
+        return ""
+
+    return transcript
 
 
 @app.post("/transcribe-base64")

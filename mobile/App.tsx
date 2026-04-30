@@ -7,7 +7,9 @@ import {
   SafeAreaView,
   StatusBar,
   Animated,
+  Image,
 } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { useAppStore } from './store/appStore';
 import HomeScreen from './screens/HomeScreen';
 import SettingsScreen from './screens/SettingsScreen';
@@ -19,7 +21,7 @@ export default function App() {
   const { isRecording, toggleRecordingFn } = useAppStore();
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
 
-  // Mikrofon butonu animasyonu
+  // Mikrofon (Kulak) butonu animasyonu
   React.useEffect(() => {
     if (isRecording) {
       Animated.loop(
@@ -36,51 +38,68 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor="#0a0a14" />
+      <StatusBar barStyle="dark-content" backgroundColor="#FDFCF0" />
 
-      {/* İçerik */}
+      {/* İçerik — Her iki screen her zaman mount'lu: tab geçişinde recorder yeniden başlamaz */}
       <View style={styles.content}>
-        {activeTab === 'home' ? <HomeScreen /> : <SettingsScreen />}
+        <View style={{ flex: 1, display: activeTab === 'home' ? 'flex' : 'none' }}>
+          <HomeScreen />
+        </View>
+        <View style={{ flex: 1, display: activeTab === 'settings' ? 'flex' : 'none' }}>
+          <SettingsScreen />
+        </View>
       </View>
 
       {/* Alt Tab Bar — mikrofon ortada */}
       <View style={styles.tabBar}>
 
-        {/* Sol: Altyazı */}
+        {/* Altyazı */}
         <TouchableOpacity
           style={styles.tabItem}
           onPress={() => setActiveTab('home')}
           activeOpacity={0.7}
         >
-          <Text style={styles.tabIcon}>📝</Text>
+          <Feather
+            name="message-square"
+            size={22}
+            color={activeTab === 'home' ? '#5D8AA8' : '#A9B8C0'}
+          />
           <Text style={[styles.tabLabel, activeTab === 'home' && styles.tabLabelActive]}>
             Altyazı
           </Text>
         </TouchableOpacity>
 
-        {/* Orta: Mikrofon butonu */}
+        {/* Kulak butonu */}
         <View style={styles.micWrapper}>
           <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
             <TouchableOpacity
-              style={[styles.micButton, isRecording && styles.micButtonActive]}
+              style={styles.micButton}
               onPress={() => toggleRecordingFn?.()}
-              activeOpacity={0.85}
+              activeOpacity={0.8}
             >
-              <Text style={styles.micIcon}>{isRecording ? '⏹' : '🎙'}</Text>
+              <Image
+                source={require('./assets/ear-skin.png')}
+                style={styles.earImage}
+                resizeMode="contain"
+              />
             </TouchableOpacity>
           </Animated.View>
           <Text style={[styles.tabLabel, isRecording && styles.micLabelActive]}>
-            {isRecording ? 'Duraksatmak için' : 'Başlatmak için'}
+            {isRecording ? 'Dinleniyor...' : 'Dinlemek için'}
           </Text>
         </View>
 
-        {/* Sağ: Ayarlar */}
+        {/* Ayarlar */}
         <TouchableOpacity
           style={styles.tabItem}
           onPress={() => setActiveTab('settings')}
           activeOpacity={0.7}
         >
-          <Text style={styles.tabIcon}>⚙️</Text>
+          <Feather
+            name="settings"
+            size={22}
+            color={activeTab === 'settings' ? '#5D8AA8' : '#A9B8C0'}
+          />
           <Text style={[styles.tabLabel, activeTab === 'settings' && styles.tabLabelActive]}>
             Ayarlar
           </Text>
@@ -91,34 +110,41 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0a0a14' },
+  root: { flex: 1, backgroundColor: '#FDFCF0' },
   content: { flex: 1 },
 
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#111122',
+    backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
-    borderTopColor: '#1e1e3a',
+    borderTopColor: '#E6E8E6',
     alignItems: 'flex-end',
     paddingBottom: 8,
     paddingHorizontal: 8,
-    height: 80,
+    height: 85,
+    // Hafif gölge
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 4,
   },
 
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
 
-  tabIcon: { fontSize: 20 },
+  tabIcon: { fontSize: 22, opacity: 0.4 },
+  tabIconActive: { opacity: 1 },
   tabLabel: {
-    fontSize: 10,
-    color: '#4b5563',
-    fontWeight: '500',
-    marginTop: 3,
+    fontSize: 11,
+    color: '#6B7A86',
+    fontWeight: '600',
+    marginTop: 4,
   },
-  tabLabelActive: { color: '#a78bfa' },
+  tabLabelActive: { color: '#5D8AA8' },
 
   // Merkezdeki mikrofon
   micWrapper: {
@@ -128,26 +154,20 @@ const styles = StyleSheet.create({
     paddingBottom: 2,
   },
   micButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#7c3aed',
+    width: 84,
+    height: 84,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4,
-    // Gölge
-    shadowColor: '#7c3aed',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.6,
-    shadowRadius: 12,
-    elevation: 10,
-    // Yükseltme efekti için negatif margin
-    marginTop: -20,
+    backgroundColor: 'transparent',
+    marginTop: -35,
   },
-  micButtonActive: {
-    backgroundColor: '#dc2626',
-    shadowColor: '#dc2626',
+  earImage: {
+    width: 80,
+    height: 80,
   },
-  micIcon: { fontSize: 28 },
-  micLabelActive: { color: '#f87171' },
+  micLabelActive: { color: '#4F8A6B', fontWeight: '700' }, // Aktifken Başarı Yeşili
 });
+
+
+
