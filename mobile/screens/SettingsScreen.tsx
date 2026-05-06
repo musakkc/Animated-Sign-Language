@@ -21,6 +21,10 @@ const DEFAULT_FONT_SIZE = 20;
 const MIN_FONT_SIZE = 12;
 const MAX_FONT_SIZE = 28;
 
+const DEFAULT_CHAT_FONT_SIZE = 14;
+const MIN_CHAT_FONT_SIZE = 11;
+const MAX_CHAT_FONT_SIZE = 24;
+
 export default function SettingsScreen() {
   const {
     backendUrl,
@@ -31,6 +35,9 @@ export default function SettingsScreen() {
     subtitleFontSize,
     setSubtitleFontSize,
     resetSubtitleFontSize,
+    chatFontSize,
+    setChatFontSize,
+    resetChatFontSize,
   } = useAppStore();
 
   const [urlInput, setUrlInput] = useState(backendUrl);
@@ -127,7 +134,7 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           {/* Başlık + Sıfırla */}
           <View style={styles.sliderHeader}>
-            <Text style={styles.sliderLabel}>Yazı Boyutu</Text>
+            <Text style={styles.sliderLabel}>Canlı Altyazı Boyutu</Text>
             <TouchableOpacity
               style={styles.resetBtn}
               onPress={resetSubtitleFontSize}
@@ -162,9 +169,56 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* Sohbet Geçmişi Yazı Boyutu Kartı */}
+        <View style={styles.card}>
+          <View style={styles.sliderHeader}>
+            <View>
+              <Text style={styles.sliderLabel}>Sohbet Yazı Boyutu</Text>
+              <Text style={styles.sliderSubLabel}>Mesaj balonlarındaki metin</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.resetBtn}
+              onPress={resetChatFontSize}
+              activeOpacity={0.7}
+            >
+              <Feather name="rotate-ccw" size={13} color="#A0887A" />
+              <Text style={styles.resetBtnText}>Sıfırla</Text>
+            </TouchableOpacity>
+          </View>
 
+          <View style={styles.sliderRow}>
+            <Slider
+              style={styles.slider}
+              minimumValue={MIN_CHAT_FONT_SIZE}
+              maximumValue={MAX_CHAT_FONT_SIZE}
+              step={1}
+              value={chatFontSize}
+              onValueChange={setChatFontSize}
+              minimumTrackTintColor="#5D8AA8"
+              maximumTrackTintColor="#E6E0D8"
+              thumbTintColor="#5D8AA8"
+            />
+            <Text style={[styles.sliderValue, { color: '#5D8AA8' }]}>{chatFontSize}</Text>
+          </View>
 
-        {/* ── Veri ── */}
+          {/* Önizleme */}
+          <View style={styles.previewBox}>
+            <View style={styles.chatPreviewRow}>
+              <View style={styles.chatBubbleMic}>
+                <Text style={[styles.chatBubbleText, { fontSize: chatFontSize }]}>
+                  Merhaba! Bu bir altyazı mesajı.
+                </Text>
+              </View>
+            </View>
+            <View style={[styles.chatPreviewRow, { justifyContent: 'flex-end' }]}>
+              <View style={styles.chatBubbleUser}>
+                <Text style={[styles.chatBubbleTextUser, { fontSize: chatFontSize }]}>
+                  Bu sizin mesajınız.
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
         {/* <Text style={styles.sectionHeader}>VERİ</Text> */}
 
         <View style={styles.card}>
@@ -248,6 +302,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: '#2F3E46',
+  },
+  sliderSubLabel: {
+    fontSize: 11,
+    color: '#9BA8AF',
+    fontWeight: '500',
+    marginTop: 2,
   },
   resetBtn: {
     flexDirection: 'row',
@@ -343,4 +403,38 @@ const styles = StyleSheet.create({
   aboutTitle: { fontSize: 18, color: '#2F3E46', fontWeight: '800', marginBottom: 8 },
   aboutText: { color: '#6B7A86', textAlign: 'center', lineHeight: 22, marginBottom: 8, fontSize: 14 },
   aboutVersion: { color: '#C4B89A', fontSize: 12, fontWeight: '700' },
+
+  /* Sohbet önizleme */
+  chatPreviewRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  chatBubbleMic: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#D5E4EF',
+    borderRadius: 14,
+    borderBottomLeftRadius: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    maxWidth: '80%',
+  },
+  chatBubbleUser: {
+    backgroundColor: '#4F8A6B',
+    borderRadius: 14,
+    borderBottomRightRadius: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    maxWidth: '80%',
+  },
+  chatBubbleText: {
+    color: '#2F3E46',
+    fontWeight: '500',
+    lineHeight: 20,
+  },
+  chatBubbleTextUser: {
+    color: '#FFFFFF',
+    fontWeight: '500',
+    lineHeight: 20,
+  },
 });

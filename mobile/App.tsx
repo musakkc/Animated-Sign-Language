@@ -50,7 +50,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* Alt Tab Bar — mikrofon ortada */}
+      {/* Alt Tab Bar */}
       <View style={styles.tabBar}>
 
         {/* Altyazı */}
@@ -69,21 +69,23 @@ export default function App() {
           </Text>
         </TouchableOpacity>
 
-        {/* Kulak butonu */}
+        {/* Kulak butonu — bar içinde, yukarı yaslanmış daire */}
         <View style={styles.micWrapper}>
-          <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-            <TouchableOpacity
-              style={styles.micButton}
-              onPress={() => toggleRecordingFn?.()}
-              activeOpacity={0.8}
-            >
-              <Image
-                source={require('./assets/ear-skin.png')}
-                style={styles.earImage}
-                resizeMode="contain"
-              />
-            </TouchableOpacity>
-          </Animated.View>
+          <View style={styles.micCircle}>
+            <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+              <TouchableOpacity
+                style={styles.micButton}
+                onPress={() => toggleRecordingFn?.()}
+                activeOpacity={0.8}
+              >
+                <Image
+                  source={require('./assets/ear-skin.png')}
+                  style={styles.earImage}
+                  resizeMode="contain"
+                />
+              </TouchableOpacity>
+            </Animated.View>
+          </View>
           <Text style={[styles.tabLabel, isRecording && styles.micLabelActive]}>
             {isRecording ? 'Dinleniyor...' : 'Dinlemek için'}
           </Text>
@@ -118,11 +120,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
     borderTopColor: '#E6E8E6',
-    alignItems: 'flex-end',
-    paddingBottom: 8,
+    alignItems: 'center',
+    paddingBottom: 10,
+    paddingTop: 6,
     paddingHorizontal: 8,
-    height: 85,
-    // Hafif gölge
+    height: 80,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.04,
@@ -133,7 +135,7 @@ const styles = StyleSheet.create({
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
 
   tabIcon: { fontSize: 22, opacity: 0.4 },
@@ -146,27 +148,40 @@ const styles = StyleSheet.create({
   },
   tabLabelActive: { color: '#5D8AA8' },
 
-  // Merkezdeki mikrofon
+  // Kulak butonu — bar içinde yukarıya yaslanmış daire
   micWrapper: {
     flex: 1.4,
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingBottom: 2,
+    justifyContent: 'center',
+  },
+  micCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E8EE',
+    shadowColor: '#5D8AA8',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.10,
+    shadowRadius: 6,
+    elevation: 3,
+    marginBottom: 2,
   },
   micButton: {
-    width: 84,
-    height: 84,
+    width: 58,
+    height: 58,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 4,
     backgroundColor: 'transparent',
-    marginTop: -35,
   },
   earImage: {
-    width: 80,
-    height: 80,
+    width: 48,
+    height: 48,
   },
-  micLabelActive: { color: '#4F8A6B', fontWeight: '700' }, // Aktifken Başarı Yeşili
+  micLabelActive: { color: '#4F8A6B', fontWeight: '700' },
 });
 
 

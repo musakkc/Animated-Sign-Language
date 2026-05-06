@@ -10,7 +10,12 @@ import {
   SafeAreaView,
   Alert,
   Platform,
+  TextInput,
+  TouchableOpacity,
+  KeyboardAvoidingView,
 } from 'react-native';
+import { Feather } from '@expo/vector-icons';
+import * as Speech from 'expo-speech';
 import { useAppStore } from '../store/appStore';
 import { useAudioRecorder } from '../services/audioRecorder';
 import { transcribeAudio, checkBackendHealth } from '../services/whisperApi';
@@ -24,8 +29,9 @@ export default function HomeScreen() {
     currentSubtitle, subtitleHistory,
     backendUrl,
     subtitleFontSize,
+    chatFontSize,
     setRecording, setProcessing,
-    setCurrentSubtitle, addToHistory,
+    setCurrentSubtitle, addToHistory, addUserMessage,
     setAnimationQueue,
     setToggleRecordingFn,
   } = useAppStore();
@@ -33,6 +39,11 @@ export default function HomeScreen() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const backendOnlineRef = useRef<boolean | null>(null);
   const previousTextRef = useRef<string>('');
+  const scrollRef = useRef<ScrollView>(null);
+
+  // Mesaj yazma
+  const [messageText, setMessageText] = useState('');
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
 
   // Sessizlik ile cümle tespiti
   const silenceCountRef = useRef(0);
@@ -78,33 +89,26 @@ export default function HomeScreen() {
         const text = await transcribeAudio(uri, backendUrl, previousTextRef.current);
 
         if (text && text.length > 0) {
-          // Konuşma var → sessizlik sayacını sıfırla, cümleye ekle
           silenceCountRef.current = 0;
           currentSentencePartsRef.current.push(text);
           previousTextRef.current = text;
 
-          // Cümlenin tamamını birleştir ve anlık göster
           const liveSentence = currentSentencePartsRef.current.join(' ');
           setCurrentSubtitle(liveSentence);
 
-          // Fade animasyonu
           subtitleFade.setValue(0.4);
           Animated.timing(subtitleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
 
-          // İşaret dili kuyruğu
           const queue = textToSignQueue(text);
           setAnimationQueue(queue.map((q) => `${q.type}:${q.value}`));
 
         } else {
-          // Sessizlik → cümle sonu tespiti
           silenceCountRef.current++;
           if (silenceCountRef.current >= 1 && currentSentencePartsRef.current.length > 0) {
-            // Cümle tamamlandı → geçmişe ekle
             const completeSentence = currentSentencePartsRef.current.join(' ');
             addToHistory(completeSentence);
             currentSentencePartsRef.current = [];
             previousTextRef.current = '';
-            // Altyazıyı soluklaştır (yeni cümle bekliyor)
             Animated.timing(subtitleFade, { toValue: 0.4, duration: 500, useNativeDriver: true }).start();
           }
         }
@@ -125,14 +129,11 @@ export default function HomeScreen() {
       try {
         const text = await transcribeAudio(uri, backendUrl, previousTextRef.current);
         if (text && text.length > 0) {
-          // Altyazıyı güncelle
           setCurrentSubtitle(text);
           subtitleFade.setValue(0.4);
           Animated.timing(subtitleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
-          // İşaret dili
           const queue = textToSignQueue(text);
           setAnimationQueue(queue.map((q) => `${q.type}:${q.value}`));
-          // Doğrudan geçmişe ekle (sessizlik bekleme)
           addToHistory(text);
         }
       } catch (error: any) {
@@ -162,19 +163,13 @@ export default function HomeScreen() {
     }
     if (isRecording) {
       setRecording(false);
-
-      // Durdurma anında birikmiş cümleyi geçmişe kaydet (sessizlik tespiti beklenmeden)
       if (currentSentencePartsRef.current.length > 0) {
         const pendingSentence = currentSentencePartsRef.current.join(' ');
         addToHistory(pendingSentence);
       }
-
-      // Refs'i sıfırla
       previousTextRef.current = '';
       currentSentencePartsRef.current = [];
       silenceCountRef.current = 0;
-
-      // stopRecording: son yarım chunk → onFinalChunkReady → handleFinalChunk
       await stopRecording();
     } else {
       setRecording(true);
@@ -185,10 +180,38 @@ export default function HomeScreen() {
     }
   }, [backendOnline, isRecording, backendUrl, startRecording, stopRecording, addToHistory]);
 
-
   useEffect(() => {
     setToggleRecordingFn(toggleRecording);
   }, [toggleRecording]);
+
+  // ── Mesaj Gönder ──
+  const handleSendMessage = useCallback(() => {
+    const trimmed = messageText.trim();
+    if (!trimmed) return;
+    addUserMessage(trimmed);
+    // Sesli oku
+    Speech.speak(trimmed, { language: 'tr-TR', rate: 0.95, pitch: 1.0 });
+    setMessageText('');
+  }, [messageText, addUserMessage]);
+
+  // ── Mesajı Sesli Oku ──
+  const handleSpeakMessage = useCallback(async (id: string, text: string) => {
+    const isSpeaking = await Speech.isSpeakingAsync();
+    if (isSpeaking) {
+      Speech.stop();
+      setSpeakingId(null);
+      return;
+    }
+    setSpeakingId(id);
+    Speech.speak(text, {
+      language: 'tr-TR',
+      rate: 0.95,
+      pitch: 1.0,
+      onDone: () => setSpeakingId(null),
+      onStopped: () => setSpeakingId(null),
+      onError: () => setSpeakingId(null),
+    });
+  }, []);
 
   const statusColor = backendOnline === null ? '#6B7A86' : backendOnline ? '#4F8A6B' : '#C96A5A';
   const statusText = backendOnline === null
@@ -196,61 +219,154 @@ export default function HomeScreen() {
     : backendOnline ? '● Sunucu bağlı' : '● Bağlantı yok';
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FDFCF0" />
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+    >
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#FDFCF0" />
 
-      {/* ══ Üst: Animasyon Alanı ══ */}
-      <View style={styles.animationArea}>
-        {/* Köşe: Bağlantı durumu */}
-        <View style={styles.statusChip}>
-          <Text style={[styles.statusText, { color: statusColor }]}>{statusText}</Text>
-        </View>
-
-        {/* Animasyon placeholder */}
-        <View style={styles.avatarPlaceholder}>
-          <Text style={styles.avatarLabel}>Animasyon Alanı</Text>
-        </View>
-
-        {/* İşleniyor göstergesi */}
-        {isProcessing && (
-          <View style={styles.processingPill}>
-            <Text style={styles.processingText}>Çözümleniyor...</Text>
+        {/* ══ Üst: Animasyon Alanı ══ */}
+        <View style={styles.animationArea}>
+          {/* Köşe: Bağlantı durumu */}
+          <View style={styles.statusChip}>
+            <Text style={[styles.statusText, { color: statusColor }]}>{statusText}</Text>
           </View>
-        )}
-      </View>
 
-      {/* ══ Orta: Anlık Altyazı ══ */}
-      <View style={styles.subtitleSection}>
-        <Animated.Text
-          style={[styles.subtitleText, { opacity: subtitleFade, fontSize: subtitleFontSize }]}
-        >
-          {currentSubtitle || (isRecording ? 'Dinleniyor...' : 'Dinlemeye başlayarak sohbeti başlatın ')}
-        </Animated.Text>
-      </View>
+          {/* Animasyon placeholder */}
+          <View style={styles.avatarPlaceholder}>
+            <Text style={styles.avatarLabel}>Animasyon Alanı</Text>
+          </View>
+        </View>
 
-      {/* ══ Alt: Geçmiş ══ */}
-      <View style={styles.historySection}>
-        <Text style={styles.historyLabel}>GEÇMİŞ</Text>
-        <ScrollView
-          style={styles.historyScroll}
-          contentContainerStyle={styles.historyContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {subtitleHistory.length === 0 ? (
-            <Text style={styles.historyEmpty}>Henüz kayıt yok</Text>
-          ) : (
-            subtitleHistory.map((entry) => (
-              <View key={entry.id} style={styles.historyItem}>
-                <Text style={styles.historyItemText}>{entry.text}</Text>
-                <Text style={styles.historyItemTime}>
-                  {entry.timestamp.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-              </View>
-            ))
-          )}
-        </ScrollView>
-      </View>
-    </SafeAreaView>
+        {/* ══ Anlık Altyazı ══ */}
+        <View style={styles.subtitleSection}>
+          <Animated.Text
+            style={[styles.subtitleText, { opacity: subtitleFade, fontSize: subtitleFontSize }]}
+          >
+            {currentSubtitle || (isRecording ? 'Dinleniyor...' : 'Dinlemeye başlayarak sohbeti başlatın ')}
+          </Animated.Text>
+        </View>
+
+        {/* ══ Sohbet Geçmişi ══ */}
+        <View style={styles.historySection}>
+          <View style={styles.historyHeader}>
+            <Text style={styles.historyLabel}>SOHBET GEÇMİŞİ</Text>
+            {isProcessing && (
+              <Text style={styles.processingInline}>Çözümleniyor...</Text>
+            )}
+          </View>
+
+          <ScrollView
+            ref={scrollRef}
+            style={styles.historyScroll}
+            contentContainerStyle={styles.historyContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          >
+            {subtitleHistory.length === 0 ? (
+              <Text style={styles.historyEmpty}>Henüz mesaj yok</Text>
+            ) : (
+              [...subtitleHistory].reverse().map((entry) => {
+                const isUser = entry.sender === 'user';
+                const isSpeaking = speakingId === entry.id;
+                return (
+                  <View
+                    key={entry.id}
+                    style={[
+                      styles.bubbleRow,
+                      isUser ? styles.bubbleRowRight : styles.bubbleRowLeft,
+                    ]}
+                  >
+                    {/* Ses butonu — sol tarafta mic mesajlarında */}
+                    {!isUser && (
+                      <TouchableOpacity
+                        style={[styles.speakBtn, isSpeaking && styles.speakBtnActive]}
+                        onPress={() => handleSpeakMessage(entry.id, entry.text)}
+                        activeOpacity={0.7}
+                      >
+                        <Feather
+                          name={isSpeaking ? 'volume-x' : 'volume-2'}
+                          size={15}
+                          color={isSpeaking ? '#C96A5A' : '#5D8AA8'}
+                        />
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Balon */}
+                    <View
+                      style={[
+                        styles.bubble,
+                        isUser ? styles.bubbleUser : styles.bubbleMic,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.bubbleText,
+                          isUser ? styles.bubbleTextUser : styles.bubbleTextMic,
+                          { fontSize: chatFontSize },
+                        ]}
+                      >
+                        {entry.text}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.bubbleTime,
+                          isUser ? styles.bubbleTimeUser : styles.bubbleTimeMic,
+                        ]}
+                      >
+                        {entry.timestamp.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+
+                    {/* Ses butonu — sağ tarafta user mesajlarında */}
+                    {isUser && (
+                      <TouchableOpacity
+                        style={[styles.speakBtn, isSpeaking && styles.speakBtnActive]}
+                        onPress={() => handleSpeakMessage(entry.id, entry.text)}
+                        activeOpacity={0.7}
+                      >
+                        <Feather
+                          name={isSpeaking ? 'volume-x' : 'volume-2'}
+                          size={15}
+                          color={isSpeaking ? '#C96A5A' : '#4F8A6B'}
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+        </View>
+
+        {/* ══ Mesaj Yazma Alanı ══ */}
+        <View style={styles.inputBar}>
+          <TextInput
+            style={styles.textInput}
+            value={messageText}
+            onChangeText={setMessageText}
+            placeholder="Mesaj yaz..."
+            placeholderTextColor="#A9B8C0"
+            multiline
+            maxLength={500}
+            returnKeyType="send"
+            onSubmitEditing={handleSendMessage}
+            blurOnSubmit={false}
+          />
+          <TouchableOpacity
+            style={[styles.sendBtn, !messageText.trim() && styles.sendBtnDisabled]}
+            onPress={handleSendMessage}
+            activeOpacity={0.8}
+            disabled={!messageText.trim()}
+          >
+            <Feather name="send" size={18} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -258,12 +374,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FDFCF0',
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0, // Android çentik koruması
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
 
-  // Animasyon alanı — üst yarı
+  // ── Animasyon alanı ──
   animationArea: {
-    height: SCREEN_HEIGHT * 0.42,
+    height: SCREEN_HEIGHT * 0.38,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E6E8E6',
@@ -273,7 +389,7 @@ const styles = StyleSheet.create({
   },
   statusChip: {
     position: 'absolute',
-    top: 20, // Daha aşağı alındı
+    top: 14,
     right: 12,
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 12,
@@ -286,30 +402,25 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
   avatarPlaceholder: { alignItems: 'center' },
   avatarLabel: { color: '#D9CBB3', fontSize: 14, fontWeight: '800', letterSpacing: 2 },
-  avatarSub: { color: '#6B7A86', fontSize: 11, marginTop: 6, fontWeight: '500' },
-  processingPill: {
-    position: 'absolute',
-    bottom: 45, // Altyazı kartının üstünde durması için yükseltildi
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#7FA9C4',
-    zIndex: 5,
+  // Çözümleniyor — SOHBET GEÇMİŞİ yanında ince yazı
+  processingInline: {
+    fontSize: 11,
+    color: '#A9B8C0',
+    fontStyle: 'italic',
+    fontWeight: '400',
+    letterSpacing: 0.2,
   },
-  processingText: { color: '#5D8AA8', fontSize: 12, fontWeight: '700' },
 
-  // Altyazı bölümü
+  // ── Altyazı ──
   subtitleSection: {
-    paddingHorizontal: 24,
-    paddingVertical: 24,
-    minHeight: 110,
-    maxHeight: 200,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    minHeight: 70,
+    maxHeight: 130,
     justifyContent: 'center',
     backgroundColor: '#FFFFFF',
     marginHorizontal: 16,
-    marginTop: -30,
+    marginTop: -20,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#E6E8E6',
@@ -322,37 +433,127 @@ const styles = StyleSheet.create({
   subtitleText: {
     fontWeight: '500',
     color: '#2F3E46',
-    lineHeight: 30,
+    lineHeight: 26,
     textAlign: 'center',
   },
 
-  // Geçmiş bölümü
+  // ── Sohbet Geçmişi ──
   historySection: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 24,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingHorizontal: 4,
   },
   historyLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
     color: '#6B7A86',
     letterSpacing: 2,
-    marginBottom: 12,
   },
+  legendRow: { flexDirection: 'row', alignItems: 'center' },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  legendText: { fontSize: 10, color: '#6B7A86', marginLeft: 4, fontWeight: '600' },
+
   historyScroll: { flex: 1 },
-  historyContent: { paddingBottom: 24 },
-  historyEmpty: { color: '#6B7A86', fontSize: 13, textAlign: 'center', marginTop: 30 },
-  historyItem: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 10,
+  historyContent: { paddingBottom: 8, paddingTop: 4 },
+  historyEmpty: { color: '#A9B8C0', fontSize: 13, textAlign: 'center', marginTop: 30 },
+
+  // ── Balonlar ──
+  bubbleRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
+    marginBottom: 10,
+  },
+  bubbleRowLeft: { justifyContent: 'flex-start' },
+  bubbleRowRight: { justifyContent: 'flex-end' },
+
+  bubble: {
+    maxWidth: '72%',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  bubbleMic: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#D5E4EF',
+    borderBottomLeftRadius: 4,
+  },
+  bubbleUser: {
+    backgroundColor: '#4F8A6B',
+    borderBottomRightRadius: 4,
+  },
+  bubbleText: { fontSize: 14, lineHeight: 20, fontWeight: '500' },
+  bubbleTextMic: { color: '#2F3E46' },
+  bubbleTextUser: { color: '#FFFFFF' },
+  bubbleTime: { fontSize: 10, marginTop: 4, fontWeight: '600' },
+  bubbleTimeMic: { color: '#A9B8C0', textAlign: 'left' },
+  bubbleTimeUser: { color: 'rgba(255,255,255,0.65)', textAlign: 'right' },
+
+  // Ses butonu
+  speakBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#F0F4F8',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 6,
     borderWidth: 1,
     borderColor: '#E6E8E6',
   },
-  historyItemText: { flex: 1, color: '#2F3E46', fontSize: 15, lineHeight: 22, fontWeight: '500' },
-  historyItemTime: { color: '#6B7A86', fontSize: 10, marginLeft: 12, marginTop: 4, fontWeight: '600' },
+  speakBtnActive: {
+    backgroundColor: '#FFF0EE',
+    borderColor: '#C96A5A',
+  },
+
+  // ── Mesaj Yazma Alanı ──
+  inputBar: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    paddingBottom: Platform.OS === 'ios' ? 10 : 12,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E6E8E6',
+    gap: 10,
+  },
+  textInput: {
+    flex: 1,
+    backgroundColor: '#F5F7F9',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    fontSize: 14,
+    color: '#2F3E46',
+    borderWidth: 1,
+    borderColor: '#E0E8EE',
+    maxHeight: 100,
+    fontWeight: '500',
+  },
+  sendBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#4F8A6B',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#4F8A6B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  sendBtnDisabled: {
+    backgroundColor: '#B8C8C0',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
 });
