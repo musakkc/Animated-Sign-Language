@@ -8,6 +8,7 @@ import {
   StatusBar,
   Animated,
   Image,
+  Platform,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useAppStore } from './store/appStore';
@@ -50,7 +51,7 @@ export default function App() {
         </View>
       </View>
 
-      {/* Alt Tab Bar */}
+      {/* Alt Tab Bar — KAV dışında, klavye açıldığında sabit kalır */}
       <View style={styles.tabBar}>
 
         {/* Altyazı */}
@@ -86,7 +87,7 @@ export default function App() {
               </TouchableOpacity>
             </Animated.View>
           </View>
-          <Text style={[styles.tabLabel, isRecording && styles.micLabelActive]}>
+          <Text style={[styles.tabLabel, { marginTop: 24 }, isRecording && styles.micLabelActive]}>
             {isRecording ? 'Dinleniyor...' : 'Dinlemek için'}
           </Text>
         </View>
@@ -121,10 +122,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#E6E8E6',
     alignItems: 'center',
-    paddingBottom: 10,
-    paddingTop: 6,
+    paddingBottom: Platform.OS === 'android' ? 12 : 10,
+    paddingTop: 8,
     paddingHorizontal: 8,
-    height: 80,
+    height: Platform.OS === 'android' ? 72 : 80,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.04,
@@ -135,7 +136,8 @@ const styles = StyleSheet.create({
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
+    justifyContent: 'center',
+    paddingVertical: 6,
   },
 
   tabIcon: { fontSize: 22, opacity: 0.4 },
@@ -144,42 +146,47 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#6B7A86',
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 3,
   },
   tabLabelActive: { color: '#5D8AA8' },
 
-  // Kulak butonu — bar içinde yukarıya yaslanmış daire
+  // Kulak butonu — bar içinde, yukarı taşacak şekilde
   micWrapper: {
     flex: 1.4,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
+    height: '100%',
+    paddingBottom: 2,
+    position: 'relative',
   },
   micCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    position: 'absolute',
+    top: -24,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#E0E8EE',
     shadowColor: '#5D8AA8',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.10,
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.15,
     shadowRadius: 6,
-    elevation: 3,
-    marginBottom: 2,
+    elevation: 6,
+    zIndex: 10,
   },
   micButton: {
-    width: 58,
-    height: 58,
+    width: 56,
+    height: 56,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'transparent',
   },
   earImage: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
   },
   micLabelActive: { color: '#4F8A6B', fontWeight: '700' },
 });
