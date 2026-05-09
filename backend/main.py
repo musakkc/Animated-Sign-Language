@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, WebSocket, WebSocketDisconnect
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
@@ -7,6 +7,12 @@ import tempfile
 import os
 import logging
 import sys
+import asyncio
+import json
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
+
+executor = ThreadPoolExecutor(max_workers=3)
 
 # Loglama
 logging.basicConfig(level=logging.INFO)
@@ -203,6 +209,192 @@ async def transcribe_audio(
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+
+
+@app.websocket("/ws/transcribe")
+async def websocket_transcribe(websocket: WebSocket):
+    """
+    Gerçek zamanlı ses transkripsiyon WebSocket endpoint'i.
+    Client ses chunk'larını base64 JSON olarak gönderir;
+    backend Whisper segment'lerini akış halinde geri yollar.
+    """
+    await websocket.accept()
+    await websocket.send_json({"type": "ready"})
+    logger.info("WebSocket bağlantısı kuruldu")
+
+    loop = asyncio.get_event_loop()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            msg = json.loads(raw)
+
+            if msg.get("type") == "audio":
+                import base64 as b64_mod
+                audio_bytes = b64_mod.b64decode(msg["data"])
+                previous_context = msg.get("context", "")  # Frontend'den gelen bağlam
+
+                # asyncio Queue — thread'den async context'e güvenli iletişim
+                result_q: asyncio.Queue = asyncio.Queue()
+
+                def whisper_task(audio_bytes=audio_bytes, ctx=previous_context):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".m4a") as f:
+                        f.write(audio_bytes)
+                        tmp = f.name
+                    try:
+                        segments, _ = whisper_model.transcribe(
+                            tmp,
+                            language="tr",
+                            beam_size=1,          # Hızlı ve stabil
+                            temperature=0.0,
+                            condition_on_previous_text=False,  # Kısa chunk'larda hallüsinasyona yol açıyor
+                            vad_filter=True,
+                            vad_parameters=dict(
+                                min_silence_duration_ms=300,
+                                speech_pad_ms=100,
+                                threshold=0.45,
+                            ),
+                            no_speech_threshold=0.65,
+                            suppress_blank=True,
+                        )
+                        for seg in segments:
+                            if hasattr(seg, 'no_speech_prob') and seg.no_speech_prob > 0.65:
+                                logger.info(f"WS segment atlandı (no_speech={seg.no_speech_prob:.2f})")
+                                continue
+                            text = seg.text.strip()
+                            if text and not is_hallucination(text):
+                                logger.info(f"WS segment: '{text}'")
+                                loop.call_soon_threadsafe(
+                                    result_q.put_nowait,
+                                    {"type": "segment", "text": text}
+                                )
+                    except Exception as e:
+                        loop.call_soon_threadsafe(
+                            result_q.put_nowait,
+                            {"type": "error", "message": str(e)}
+                        )
+                    finally:
+                        loop.call_soon_threadsafe(result_q.put_nowait, None)
+                        try:
+                            os.unlink(tmp)
+                        except:
+                            pass
+
+                # Thread pool'da başlat (event loop'u bloklamaz)
+                fut = loop.run_in_executor(executor, whisper_task)
+
+                # Segment'leri anında gönder (streaming)
+                while True:
+                    item = await result_q.get()
+                    if item is None:
+                        break
+                    await websocket.send_json(item)
+
+                # Thread'in tamamen bitmesini bekle
+                try:
+                    await fut
+                except Exception as e:
+                    logger.error(f"Whisper thread hatası: {e}")
+
+            elif msg.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket bağlantısı kesildi (normal)")
+    except Exception as e:
+        logger.error(f"WebSocket beklenmeyen hata: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except:
+            pass
+
+@app.get("/get-sign-animation/{word}")
+async def get_sign_animation(word: str):
+    """
+    Verilen kelimeyi labels.csv'den bulup, ilgili parquet dosyasını okuyarak
+    3D animasyon koordinatlarını JSON olarak döndürür.
+    """
+    word = word.lower().strip()
+    
+    # 1. Kelimenin sign_id'sini bul
+    labels_path = "dataset/labels.csv"
+    if not os.path.exists(labels_path):
+        raise HTTPException(status_code=500, detail="labels.csv bulunamadı")
+        
+    df_labels = pd.read_csv(labels_path)
+    
+    # 1. Tam eşleşme ara
+    match = df_labels[df_labels['word'] == word]
+    
+    # 2. Bulunamazsa basit ekleri (iyelik, çoğul, hal ekleri) atarak kök ara
+    if match.empty:
+        suffixes = [
+            'm', 'n', 'i', 'ı', 'u', 'ü', 'si', 'sı', 'su', 'sü',
+            'im', 'ım', 'um', 'üm', 'in', 'ın', 'un', 'ün',
+            'ler', 'lar', 'leri', 'ları',
+            'de', 'da', 'te', 'ta', 'den', 'dan', 'ten', 'tan',
+            'ye', 'ya', 'e', 'a', 'yim', 'yım', 'yum', 'yüm', 'sin', 'sın'
+        ]
+        
+        # En uzun ekleri önce kontrol etmek için uzunluğa göre sırala
+        for suffix in sorted(suffixes, key=len, reverse=True):
+            if word.endswith(suffix):
+                root = word[:-len(suffix)]
+                if len(root) >= 2:  # Kök en az 2 harfli olmalı (Örn: "onlar" -> "on")
+                    match = df_labels[df_labels['word'] == root]
+                    if not match.empty:
+                        break
+
+    if match.empty:
+        raise HTTPException(status_code=404, detail=f"'{word}' kelimesi sözlükte bulunamadı")
+        
+    sign_id = match.iloc[0]['sign_id']
+    
+    # 2. train.csv'den dosya yolunu bul
+    train_csv_path = "dataset/train.csv"
+    if not os.path.exists(train_csv_path):
+        raise HTTPException(status_code=500, detail="train.csv bulunamadı")
+        
+    df_train = pd.read_csv(train_csv_path)
+    match_train = df_train[df_train['sign'] == sign_id]
+    if match_train.empty:
+        raise HTTPException(status_code=404, detail=f"ID {sign_id} için eğitim verisi bulunamadı")
+        
+    # İlk eşleşen dosyayı al (aynı kelimeden birden fazla video olabilir)
+    parquet_rel_path = match_train.iloc[0]['path']
+    parquet_abs_path = os.path.join("dataset", parquet_rel_path)
+    
+    if not os.path.exists(parquet_abs_path):
+        raise HTTPException(status_code=404, detail=f"Parquet dosyası bulunamadı: {parquet_abs_path}")
+        
+    # 3. Parquet dosyasını oku ve parse et
+    try:
+        df_pq = pd.read_parquet(parquet_abs_path)
+        # Sadece vücut ve elleri alalım (yüz çok veri yapıyor)
+        df_pq = df_pq[df_pq['type'].isin(['pose', 'left_hand', 'right_hand'])]
+        
+        # NaN değerleri olan satırları (örn. eller ekrandan çıkınca) sil
+        # JSON'da NaN geçersizdir, bu yüzden hata veriyordu.
+        df_pq = df_pq.dropna(subset=['x', 'y', 'z'])
+        
+        # Frame'lere göre grupla
+        frames = {}
+        for frame, group in df_pq.groupby('frame'):
+            # Gruptaki her bir satırı (landmark) dict olarak al
+            points = group[['type', 'landmark_index', 'x', 'y', 'z']].to_dict('records')
+            frames[int(frame)] = points
+            
+        return {
+            "success": True,
+            "word": word,
+            "sign_id": int(sign_id),
+            "file": parquet_rel_path,
+            "total_frames": len(frames),
+            "frames": frames
+        }
+    except Exception as e:
+        logger.error(f"Parquet okuma hatası: {e}")
+        raise HTTPException(status_code=500, detail="Animasyon verisi okunamadı")
 
 
 if __name__ == "__main__":

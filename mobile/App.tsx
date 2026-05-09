@@ -9,6 +9,7 @@ import {
   Animated,
   Image,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useAppStore } from './store/appStore';
@@ -21,6 +22,20 @@ export default function App() {
   const [activeTab, setActiveTab] = React.useState<Tab>('home');
   const { isRecording, toggleRecordingFn } = useAppStore();
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
+  const [isKeyboardVisible, setKeyboardVisible] = React.useState(false);
+
+  React.useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   // Mikrofon (Kulak) butonu animasyonu
   React.useEffect(() => {
@@ -51,10 +66,11 @@ export default function App() {
         </View>
       </View>
 
-      {/* Alt Tab Bar — KAV dışında, klavye açıldığında sabit kalır */}
-      <View style={styles.tabBar}>
+      {/* Alt Tab Bar — KAV dışında, klavye açıldığında gizlenir */}
+      {!isKeyboardVisible && (
+        <View style={styles.tabBar}>
 
-        {/* Altyazı */}
+          {/* Altyazı */}
         <TouchableOpacity
           style={styles.tabItem}
           onPress={() => setActiveTab('home')}
@@ -107,7 +123,8 @@ export default function App() {
             Ayarlar
           </Text>
         </TouchableOpacity>
-      </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }

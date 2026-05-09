@@ -17,53 +17,95 @@ import {
 import { Feather } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
 import { useAppStore } from '../store/appStore';
-import { useAudioRecorder } from '../services/audioRecorder';
-import { transcribeAudio, checkBackendHealth } from '../services/whisperApi';
+import { useWebSocketRecorder } from '../services/useWebSocketRecorder';
+import { checkBackendHealth } from '../services/whisperApi';
 import { textToSignQueue } from '../services/signLanguageMapper';
+import SignAvatar from '../components/SignAvatar';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function HomeScreen() {
   const {
-    isRecording, isProcessing,
+    isRecording,
     currentSubtitle, subtitleHistory,
     backendUrl,
     subtitleFontSize,
     chatFontSize,
-    setRecording, setProcessing,
+    setRecording,
     setCurrentSubtitle, addToHistory, addUserMessage,
     setAnimationQueue,
     setToggleRecordingFn,
   } = useAppStore();
 
-  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
-  const backendOnlineRef = useRef<boolean | null>(null);
-  const previousTextRef = useRef<string>('');
   const scrollRef = useRef<ScrollView>(null);
+  const currentSentencePartsRef = useRef<string[]>([]);
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const volumeHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showVolumeHint, setShowVolumeHint] = useState(false);
+
+  // Geçmişe aktarma süresi — bu kadar sessizlik sonra cümle geçmişe geçer
+  const COMMIT_SILENCE_MS = 2500;
 
   // Mesaj yazma
   const [messageText, setMessageText] = useState('');
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-
-  // Sessizlik ile cümle tespiti
-  const silenceCountRef = useRef(0);
-  const currentSentencePartsRef = useRef<string[]>([]);
+  
+  // Avatar'ın oynatacağı kelime
+  const [avatarWord, setAvatarWord] = useState('');
 
   // Animasyonlar
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const subtitleFade = useRef(new Animated.Value(1)).current;
 
-  // Backend sağlık kontrolü
-  useEffect(() => {
-    const checkHealth = async () => {
-      const ok = await checkBackendHealth(backendUrl);
-      setBackendOnline(ok);
-      backendOnlineRef.current = ok;
-    };
-    checkHealth();
-    const interval = setInterval(checkHealth, 15000);
-    return () => clearInterval(interval);
-  }, [backendUrl]);
+  // Biriken cümleyi geçmişe aktar ve canlı metni sıfırla
+  const commitToHistory = useCallback(() => {
+    commitTimerRef.current = null;
+    const sentence = currentSentencePartsRef.current.join(' ').trim();
+    if (!sentence) return;
+    addToHistory(sentence);
+    // Son kelimeyi animasyona gönder (POC amaçlı sadece kelime bazlı çalışıyoruz şimdilik)
+    const words = sentence.split(' ');
+    setAvatarWord(words[words.length - 1].toLowerCase());
+    
+    currentSentencePartsRef.current = [];
+    setCurrentSubtitle('');
+    Animated.timing(subtitleFade, {
+      toValue: 0.4, duration: 600, useNativeDriver: true,
+    }).start(() => subtitleFade.setValue(1));
+  }, [addToHistory, setCurrentSubtitle]);
+
+  // WebSocket segment callback'i — her Whisper segment'i alındığında
+  const handleSegment = useCallback((text: string) => {
+    currentSentencePartsRef.current.push(text);
+    const live = currentSentencePartsRef.current.join(' ');
+    setCurrentSubtitle(live);
+
+    // Fade-in animasyonu
+    subtitleFade.setValue(0.5);
+    Animated.timing(subtitleFade, {
+      toValue: 1, duration: 200, useNativeDriver: true,
+    }).start();
+
+    // Her yeni kelimede timer'ı sıfırla ve yeniden başlat
+    if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = setTimeout(commitToHistory, COMMIT_SILENCE_MS);
+
+    // İşaret dili animasyon kuyruğu
+    const queue = textToSignQueue(text);
+    setAnimationQueue(queue.map((q) => `${q.type}:${q.value}`));
+  }, [setCurrentSubtitle, setAnimationQueue, commitToHistory, COMMIT_SILENCE_MS]);
+
+  // Sessizlik sinyali — timer'ı hızlandır (1s kala)
+  const handleSilence = useCallback(() => {
+    if (currentSentencePartsRef.current.length === 0) return;
+    if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = setTimeout(commitToHistory, 1000);
+  }, [commitToHistory]);
+
+  // Unmount'ta timer'ı temizle
+  useEffect(() => () => {
+    if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+  }, []);
 
   // Pulse animasyonu
   useEffect(() => {
@@ -80,105 +122,58 @@ export default function HomeScreen() {
     }
   }, [isRecording]);
 
-  // Chunk işleme — sessizlik tespiti ile cümle birleştirme
-  const handleChunkReady = useCallback(
-    async (uri: string) => {
-      if (!backendOnlineRef.current) return;
-      setProcessing(true);
-      try {
-        const text = await transcribeAudio(uri, backendUrl, previousTextRef.current);
-
-        if (text && text.length > 0) {
-          silenceCountRef.current = 0;
-          currentSentencePartsRef.current.push(text);
-          previousTextRef.current = text;
-
-          const liveSentence = currentSentencePartsRef.current.join(' ');
-          setCurrentSubtitle(liveSentence);
-
-          subtitleFade.setValue(0.4);
-          Animated.timing(subtitleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
-
-          const queue = textToSignQueue(text);
-          setAnimationQueue(queue.map((q) => `${q.type}:${q.value}`));
-
-        } else {
-          silenceCountRef.current++;
-          if (silenceCountRef.current >= 1 && currentSentencePartsRef.current.length > 0) {
-            const completeSentence = currentSentencePartsRef.current.join(' ');
-            addToHistory(completeSentence);
-            currentSentencePartsRef.current = [];
-            previousTextRef.current = '';
-            Animated.timing(subtitleFade, { toValue: 0.4, duration: 500, useNativeDriver: true }).start();
-          }
-        }
-      } catch (error: any) {
-        console.error('Chunk hatası:', error.message);
-      } finally {
-        setProcessing(false);
-      }
-    },
-    [backendUrl, addToHistory]
-  );
-
-  // Durdurma anındaki yarım chunk — doğrudan geçmişe yaz
-  const handleFinalChunk = useCallback(
-    async (uri: string) => {
-      if (!backendOnlineRef.current) return;
-      setProcessing(true);
-      try {
-        const text = await transcribeAudio(uri, backendUrl, previousTextRef.current);
-        if (text && text.length > 0) {
-          setCurrentSubtitle(text);
-          subtitleFade.setValue(0.4);
-          Animated.timing(subtitleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
-          const queue = textToSignQueue(text);
-          setAnimationQueue(queue.map((q) => `${q.type}:${q.value}`));
-          addToHistory(text);
-        }
-      } catch (error: any) {
-        console.error('Final chunk hatası:', error.message);
-      } finally {
-        setProcessing(false);
-      }
-    },
-    [backendUrl, addToHistory]
-  );
-
-  const { startRecording, stopRecording } = useAudioRecorder({
-    onChunkReady: handleChunkReady,
-    chunkDurationMs: 4000,
-    onFinalChunkReady: handleFinalChunk,
+  const { startRecording, stopRecording, preConnect, wsStatus } = useWebSocketRecorder({
+    backendUrl,
+    onSegment: handleSegment,
+    onSilence: handleSilence,
   });
 
-  // Mikrofon toggle fonksiyonunu store'a kaydet (App.tsx kullanacak)
+  // backendUrl ayarlandığında (veya değiştiğinde) WebSocket'i önceden kur.
+  // Kulak butonuna basıldığında bağlantı zaten hazır olur → anında başlar.
+  useEffect(() => {
+    if (!backendUrl) return;
+    preConnect();
+  }, [backendUrl]);
+
+  // Mikrofon toggle
   const toggleRecording = useCallback(async () => {
-    if (!backendOnline && !isRecording) {
-      Alert.alert(
-        'Bağlantı Hatası',
-        `Sunucuya bağlanılamıyor.\n${backendUrl}\n\nAyarlar'dan bağlantıyı kontrol edin.`,
-        [{ text: 'Tamam' }]
-      );
-      return;
-    }
     if (isRecording) {
       setRecording(false);
-      if (currentSentencePartsRef.current.length > 0) {
-        const pendingSentence = currentSentencePartsRef.current.join(' ');
-        addToHistory(pendingSentence);
+      setShowVolumeHint(false);
+      if (volumeHintTimerRef.current) clearTimeout(volumeHintTimerRef.current);
+      // Timer'ı iptal et, bekleyen cümleyi hemen kaydet
+      if (commitTimerRef.current) {
+        clearTimeout(commitTimerRef.current);
+        commitTimerRef.current = null;
       }
-      previousTextRef.current = '';
+      const pending = currentSentencePartsRef.current.join(' ').trim();
+      if (pending) {
+        addToHistory(pending);
+        setCurrentSubtitle('');
+      }
       currentSentencePartsRef.current = [];
-      silenceCountRef.current = 0;
       await stopRecording();
     } else {
-      setRecording(true);
-      currentSentencePartsRef.current = [];
-      previousTextRef.current = '';
-      silenceCountRef.current = 0;
-      await startRecording();
+      doStartRecording();
     }
-  }, [backendOnline, isRecording, backendUrl, startRecording, stopRecording, addToHistory]);
+  }, [isRecording, stopRecording, setCurrentSubtitle, addToHistory]);
+
+  // Kayıt başlatma yardımcı fonksiyonu
+  const doStartRecording = useCallback(async () => {
+    setRecording(true);
+    currentSentencePartsRef.current = [];
+    setCurrentSubtitle('');
+    try {
+      await startRecording();
+    } catch (err: any) {
+      setRecording(false);
+      Alert.alert(
+        'Bağlantı Hatası',
+        `WebSocket bağlantısı kurulamadı.\n${backendUrl}\n\nSunucunun çalıştığını kontrol edin.`,
+        [{ text: 'Tamam' }]
+      );
+    }
+  }, [backendUrl, startRecording, setCurrentSubtitle]);
 
   useEffect(() => {
     setToggleRecordingFn(toggleRecording);
@@ -189,6 +184,11 @@ export default function HomeScreen() {
     const trimmed = messageText.trim();
     if (!trimmed) return;
     addUserMessage(trimmed);
+    
+    // Girilen cümleyi (veya kelimeyi) animasyona gönder
+    const words = trimmed.split(' ');
+    setAvatarWord(words[words.length - 1].toLowerCase());
+
     // Sesli oku
     Speech.speak(trimmed, { language: 'tr-TR', rate: 0.95, pitch: 1.0 });
     setMessageText('');
@@ -202,6 +202,11 @@ export default function HomeScreen() {
       setSpeakingId(null);
       return;
     }
+    // Ses uyarı banner'ını göster (TTS için ses gerekli)
+    setShowVolumeHint(true);
+    if (volumeHintTimerRef.current) clearTimeout(volumeHintTimerRef.current);
+    volumeHintTimerRef.current = setTimeout(() => setShowVolumeHint(false), 3500);
+
     setSpeakingId(id);
     Speech.speak(text, {
       language: 'tr-TR',
@@ -213,15 +218,17 @@ export default function HomeScreen() {
     });
   }, []);
 
-  const statusColor = backendOnline === null ? '#6B7A86' : backendOnline ? '#4F8A6B' : '#C96A5A';
-  const statusText = backendOnline === null
-    ? 'Kontrol ediliyor...'
-    : backendOnline ? '● Sunucu bağlı' : '● Bağlantı yok';
+  const statusColor =
+    wsStatus === 'open' ? '#4F8A6B' :
+      wsStatus === 'connecting' ? '#C8963A' : '#6B7A86';
+  const statusText =
+    wsStatus === 'open' ? '● Canlı bağlı' :
+      wsStatus === 'connecting' ? '◌ Bağlanıyor...' : '○ Hazır';
 
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
       keyboardVerticalOffset={0}
     >
       <SafeAreaView style={styles.container}>
@@ -234,9 +241,9 @@ export default function HomeScreen() {
             <Text style={[styles.statusText, { color: statusColor }]}>{statusText}</Text>
           </View>
 
-          {/* Animasyon placeholder */}
+          {/* Animasyon Alanı */}
           <View style={styles.avatarPlaceholder}>
-            <Text style={styles.avatarLabel}>Animasyon Alanı</Text>
+             <SignAvatar word={avatarWord} />
           </View>
         </View>
 
@@ -249,12 +256,19 @@ export default function HomeScreen() {
           </Animated.Text>
         </View>
 
+        {/* Ses uyarı banner’ı artık burada değil, sohbet geçmişi başlığında gösterilecek */}
         {/* ══ Sohbet Geçmişi ══ */}
         <View style={styles.historySection}>
           <View style={styles.historyHeader}>
             <Text style={styles.historyLabel}>SOHBET GEÇMİŞİ</Text>
-            {isProcessing && (
-              <Text style={styles.processingInline}>Çözümleniyor...</Text>
+            {wsStatus === 'connecting' && (
+              <Text style={styles.processingInline}>Bağlanıyor...</Text>
+            )}
+            {showVolumeHint && (
+              <View style={styles.volumeHint}>
+                <Feather name="volume-2" size={11} color="#7A5C00" style={{ marginRight: 4 }} />
+                <Text style={styles.volumeHintText}>Sesin açık olduğundan emin olunuz!</Text>
+              </View>
             )}
           </View>
 
@@ -555,5 +569,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#B8C8C0',
     shadowOpacity: 0,
     elevation: 0,
+  },
+
+  // ── Ses uyarı chip'i (geçmiş başlığında) ──
+  volumeHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#FFF8E1',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFE082',
+  },
+  volumeHintText: {
+    fontSize: 10,
+    color: '#7A5C00',
+    fontWeight: '700',
   },
 });
