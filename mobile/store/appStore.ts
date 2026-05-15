@@ -58,7 +58,7 @@ export const useAppStore = create<AppState>((set) => ({
   animationQueue: [],
   currentAnimationWord: null,
   isAnimating: false,
-  backendUrl: 'http://10.14.168.202:8000', // Varsayılan — ayarlardan değiştirilebilir
+  backendUrl: 'http://10.12.178.202:8000', // Varsayılan — ayarlardan değiştirilebilir
   animationSpeed: 1.0,
   subtitleFontSize: 20,
   chatFontSize: 14,

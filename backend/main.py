@@ -50,9 +50,9 @@ except (subprocess.CalledProcessError, FileNotFoundError):
 
 # Whisper modelini başlat (Windows'ta CUDA DLL sorunları nedeniyle CPU tercih ediliyor)
 try:
-    logger.info("Whisper modeli yükleniyor (small, CPU)...")
-    whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
-    logger.info("Whisper small modeli CPU üzerinde hazır ✅")
+    logger.info("Whisper modeli yükleniyor (medium, CPU)...")
+    whisper_model = WhisperModel("medium", device="cpu", compute_type="int8")
+    logger.info("Whisper medium modeli CPU üzerinde hazır ✅")
     current_device = "cpu"
 except Exception as e:
     logger.error(f"❌ Model yüklenemedi: {e}")
@@ -125,11 +125,11 @@ def run_whisper(tmp_path: str, previous_text: str = "") -> str:
         initial_prompt=None,
         vad_filter=True,
         vad_parameters=dict(
-            min_silence_duration_ms=200,  # Daha kısa sessizlik tespiti
-            speech_pad_ms=80,
-            threshold=0.5,
+            min_silence_duration_ms=300,
+            speech_pad_ms=200,
+            threshold=0.2,  # Daha hassas (normal konuşmaları kesmemesi için düşürüldü)
         ),
-        no_speech_threshold=0.7,
+        no_speech_threshold=0.8,
         suppress_blank=True,
         word_timestamps=False,
     )
@@ -137,7 +137,7 @@ def run_whisper(tmp_path: str, previous_text: str = "") -> str:
     parts = []
     for seg in segments:
         # Segment başına no_speech olasılığı kontrolü
-        if hasattr(seg, 'no_speech_prob') and seg.no_speech_prob > 0.65:
+        if hasattr(seg, 'no_speech_prob') and seg.no_speech_prob > 0.85:
             logger.info(f"Segment atlandı (no_speech_prob={seg.no_speech_prob:.2f}): '{seg.text}'")
             continue
         cleaned = seg.text.strip()
@@ -250,15 +250,15 @@ async def websocket_transcribe(websocket: WebSocket):
                             condition_on_previous_text=False,  # Kısa chunk'larda hallüsinasyona yol açıyor
                             vad_filter=True,
                             vad_parameters=dict(
-                                min_silence_duration_ms=300,
-                                speech_pad_ms=100,
-                                threshold=0.45,
+                                min_silence_duration_ms=400,
+                                speech_pad_ms=300,
+                                threshold=0.2,  # Sesleri gürültü sanıp silmemesi için düşürüldü
                             ),
-                            no_speech_threshold=0.65,
+                            no_speech_threshold=0.8,
                             suppress_blank=True,
                         )
                         for seg in segments:
-                            if hasattr(seg, 'no_speech_prob') and seg.no_speech_prob > 0.65:
+                            if hasattr(seg, 'no_speech_prob') and seg.no_speech_prob > 0.85:
                                 logger.info(f"WS segment atlandı (no_speech={seg.no_speech_prob:.2f})")
                                 continue
                             text = seg.text.strip()

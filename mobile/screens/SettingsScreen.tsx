@@ -40,6 +40,8 @@ export default function SettingsScreen() {
     resetChatFontSize,
   } = useAppStore();
 
+  const resetAnimationSpeed = () => setAnimationSpeed(1.0);
+
   const [urlInput, setUrlInput] = useState(backendUrl);
   const [testing, setTesting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -130,6 +132,41 @@ export default function SettingsScreen() {
         {/* ── Görünüm Ayarları ── */}
         <Text style={styles.sectionHeader}>GÖRÜNÜM AYARLARI</Text>
 
+        {/* Animasyon Hızı Kartı */}
+        <View style={styles.card}>
+          <View style={styles.sliderHeader}>
+            <View>
+              <Text style={styles.sliderLabel}>Animasyon Hızı</Text>
+
+            </View>
+            <TouchableOpacity
+              style={styles.resetBtn}
+              onPress={resetAnimationSpeed}
+              activeOpacity={0.7}
+            >
+              <Feather name="rotate-ccw" size={13} color="#A0887A" />
+              <Text style={styles.resetBtnText}>Sıfırla</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.sliderRow}>
+            <Slider
+              style={styles.slider}
+              minimumValue={0.5}
+              maximumValue={3.0}
+              step={0.1}
+              value={animationSpeed}
+              onValueChange={setAnimationSpeed}
+              minimumTrackTintColor="#4F8A6B"
+              maximumTrackTintColor="#E6E0D8"
+              thumbTintColor="#4F8A6B"
+            />
+            <Text style={[styles.sliderValue, { color: '#4F8A6B' }]}>
+              {animationSpeed.toFixed(1)}x
+            </Text>
+          </View>
+        </View>
+
         {/* Yazı Boyutu Kartı */}
         <View style={styles.card}>
           {/* Başlık + Sıfırla */}
@@ -173,8 +210,7 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <View style={styles.sliderHeader}>
             <View>
-              <Text style={styles.sliderLabel}>Sohbet Yazı Boyutu</Text>
-              <Text style={styles.sliderSubLabel}>Mesaj balonlarındaki metin</Text>
+              <Text style={styles.sliderLabel}>Sohbet Geçmişi Yazı Boyutu</Text>
             </View>
             <TouchableOpacity
               style={styles.resetBtn}

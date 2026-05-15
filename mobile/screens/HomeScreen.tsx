@@ -50,8 +50,10 @@ export default function HomeScreen() {
   const [messageText, setMessageText] = useState('');
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   
-  // Avatar'ın oynatacağı kelime
-  const [avatarWord, setAvatarWord] = useState('');
+  // Avatar'ın oynatacağı kelime kuyruğu ve ID'si (yeni mesajda sıfırlamak için)
+  const [avatarQueue, setAvatarQueue] = useState<{ id: string, words: string[] }>({ id: 'init', words: [] });
+  // O anki dinleme seansının id'si
+  const recordingIdRef = useRef<string>('init');
 
   // Animasyonlar
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -63,9 +65,17 @@ export default function HomeScreen() {
     const sentence = currentSentencePartsRef.current.join(' ').trim();
     if (!sentence) return;
     addToHistory(sentence);
-    // Son kelimeyi animasyona gönder (POC amaçlı sadece kelime bazlı çalışıyoruz şimdilik)
-    const words = sentence.split(' ');
-    setAvatarWord(words[words.length - 1].toLowerCase());
+    // Tüm kelimeleri kuyruğa ekle (sıfırlama, devam et) ve noktalama işaretlerini temizle
+    const words = sentence
+      .split(' ')
+      .map(w => w.replace(/[.,!?;:]/g, '').toLowerCase())
+      .filter(Boolean);
+    if (words.length > 0) {
+      setAvatarQueue(prev => ({
+        id: recordingIdRef.current,
+        words: prev.id === recordingIdRef.current ? [...prev.words, ...words] : words
+      }));
+    }
     
     currentSentencePartsRef.current = [];
     setCurrentSubtitle('');
@@ -149,6 +159,17 @@ export default function HomeScreen() {
       const pending = currentSentencePartsRef.current.join(' ').trim();
       if (pending) {
         addToHistory(pending);
+        // Tüm kelimeleri kuyruğa ekle ve noktalama işaretlerini temizle
+        const words = pending
+          .split(' ')
+          .map(w => w.replace(/[.,!?;:]/g, '').toLowerCase())
+          .filter(Boolean);
+        if (words.length > 0) {
+          setAvatarQueue(prev => ({
+            id: recordingIdRef.current,
+            words: prev.id === recordingIdRef.current ? [...prev.words, ...words] : words
+          }));
+        }
         setCurrentSubtitle('');
       }
       currentSentencePartsRef.current = [];
@@ -161,6 +182,7 @@ export default function HomeScreen() {
   // Kayıt başlatma yardımcı fonksiyonu
   const doStartRecording = useCallback(async () => {
     setRecording(true);
+    recordingIdRef.current = Date.now().toString(); // Yeni kayıt için yeni ID
     currentSentencePartsRef.current = [];
     setCurrentSubtitle('');
     try {
@@ -185,9 +207,12 @@ export default function HomeScreen() {
     if (!trimmed) return;
     addUserMessage(trimmed);
     
-    // Girilen cümleyi (veya kelimeyi) animasyona gönder
-    const words = trimmed.split(' ');
-    setAvatarWord(words[words.length - 1].toLowerCase());
+    // Tüm kelimeleri sırayla animasyona gönder (yeni mesaj = sıfırlanmış kuyruk, noktalama temizlenmiş)
+    const words = trimmed
+      .split(' ')
+      .map(w => w.replace(/[.,!?;:]/g, '').toLowerCase())
+      .filter(Boolean);
+    setAvatarQueue({ id: Date.now().toString(), words });
 
     // Sesli oku
     Speech.speak(trimmed, { language: 'tr-TR', rate: 0.95, pitch: 1.0 });
@@ -243,7 +268,7 @@ export default function HomeScreen() {
 
           {/* Animasyon Alanı */}
           <View style={styles.avatarPlaceholder}>
-             <SignAvatar word={avatarWord} />
+             <SignAvatar queueData={avatarQueue} />
           </View>
         </View>
 
@@ -394,12 +419,13 @@ const styles = StyleSheet.create({
   // ── Animasyon alanı ──
   animationArea: {
     height: SCREEN_HEIGHT * 0.38,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#1E1E1E',
     borderBottomWidth: 1,
-    borderBottomColor: '#E6E8E6',
+    borderBottomColor: '#1E1E1E',
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
+    overflow: 'hidden',
   },
   statusChip: {
     position: 'absolute',
@@ -414,7 +440,7 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   statusText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
-  avatarPlaceholder: { alignItems: 'center' },
+  avatarPlaceholder: { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
   avatarLabel: { color: '#D9CBB3', fontSize: 14, fontWeight: '800', letterSpacing: 2 },
   // Çözümleniyor — SOHBET GEÇMİŞİ yanında ince yazı
   processingInline: {
